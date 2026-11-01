@@ -1,0 +1,63 @@
+server:
+  port: 18080
+  shutdown: graceful
+
+spring:
+  application:
+    name: okex-alpha
+  datasource:
+    url: ${OKX_DB_URL:jdbc:postgresql://localhost:5432/okex_alpha}
+    username: ${OKX_DB_USER:postgres}
+    password: ${OKX_DB_PASSWORD:123456}
+    hikari:
+      pool-name: okex-pool
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 10000
+  jackson:
+    default-property-inclusion: non_null
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    root: INFO
+    com.okexalpha: INFO
+
+okx:
+  base-url: https://www.okx.com
+  connect-timeout-ms: 10000
+  read-timeout-ms: 20000
+  user-agent: OkexAlpha/0.1 (+https://github.com/springsky1/OkexAlpha)
+  retry:
+    max-attempts: 3
+    base-backoff-ms: 500
+  rate-limit:
+    enabled: true
+    # 每 2 秒配额。官方口径：行情类 20 次/2s、资金费率历史 10 次/2s、rubik 统计 5 次/2s；
+    # 这里取 ~80%，留出余量与大盘行情共用额度。
+    instruments-per-2s: 16
+    candles-per-2s: 16
+    funding-per-2s: 10
+    rubik-per-2s: 4
+  backfill:
+    worker-threads: 8
+    queue-capacity: 64
+    page-limit: 300
+    auto-resume: true
+    max-tasks-per-job: 5000
+  sync:
+    include-options: true
+  schedule:
+    enabled: false
+  api-log:
+    enabled: true
+  db:
+    auto-init: true
