@@ -18,7 +18,10 @@ import com.okexalpha.domain.KlineRow;
 import com.okexalpha.domain.KlineType;
 import com.okexalpha.repository.KlineRepository;
 
-/** 按 after 游标向前翻页补拉 K 线（CANDLE / MARK，均为永续合约 SWAP）。 */
+/**
+ * 按 after 游标向前翻页补拉 K 线（CANDLE / MARK，均为永续合约 SWAP）。
+ * 每 okx.db.commit-every-pages 页合并一次事务提交（见 {@link PageBatcher}）。
+ */
 @Component
 public class KlineTaskHandler implements BackfillTaskHandler {
 
@@ -28,15 +31,15 @@ public class KlineTaskHandler implements BackfillTaskHandler {
     private final OkxApiClient client;
     private final OkxProperties properties;
     private final KlineRepository klineRepository;
-    private final BackfillPageWriter pageWriter;
+    private final PageBatcher pageBatcher;
     private final ObjectMapper objectMapper;
 
     public KlineTaskHandler(OkxApiClient client, OkxProperties properties, KlineRepository klineRepository,
-            BackfillPageWriter pageWriter, ObjectMapper objectMapper) {
+            PageBatcher pageBatcher, ObjectMapper objectMapper) {
         this.client = client;
         this.properties = properties;
         this.klineRepository = klineRepository;
-        this.pageWriter = pageWriter;
+        this.pageBatcher = pageBatcher;
         this.objectMapper = objectMapper;
     }
 
@@ -59,8 +62,10 @@ public class KlineTaskHandler implements BackfillTaskHandler {
         int pageCount = task.pageCount();
         long rowsWritten = task.rowsWritten();
 
+        PageBatcher.Batch batch = pageBatcher.batch(task.id());
         while (true) {
             if (control.shouldStop()) {
+                batch.flush();
                 log.info("task {} stopped at cursor {}", task.taskKey(), cursor);
                 return new TaskOutcome(rowsWritten, false, "stopped");
             }
@@ -77,13 +82,13 @@ public class KlineTaskHandler implements BackfillTaskHandler {
             pageCount++;
             rowsWritten += page.size();
             final List<KlineRow> rows = page;
-            pageWriter.write(task.id(), () -> klineRepository.upsertAll(rows), newCursor, pageCount, rowsWritten,
-                    false);
+            batch.add(() -> klineRepository.upsertAll(rows), newCursor, pageCount, rowsWritten, false);
             cursor = newCursor;
             if (cursor <= startMs) {
                 break;
             }
         }
+        batch.flush();
         return new TaskOutcome(rowsWritten, false, null);
     }
 

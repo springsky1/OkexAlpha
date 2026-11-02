@@ -130,6 +130,40 @@ code {
   box-shadow: 0 4px 12px rgba(47, 111, 237, 0.35);
 }
 
+/* ---------- 导航分组（可折叠） ---------- */
+.nav-group { display: flex; flex-direction: column; gap: 2px; }
+.nav-group + .nav-group {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+.nav-group-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px 4px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--sidebar-text);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-align: left;
+  cursor: pointer;
+  opacity: 0.72;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+.nav-group-toggle:hover { opacity: 1; background: rgba(255, 255, 255, 0.05); }
+.nav-group-toggle:focus-visible { outline: 2px solid var(--sidebar-active); outline-offset: 1px; }
+.nav-group-arrow { font-size: 10px; line-height: 1; transition: transform 0.15s ease; }
+.nav-group.is-collapsed .nav-group-arrow { transform: rotate(-90deg); }
+.nav-items { display: flex; flex-direction: column; gap: 2px; }
+.nav-items[hidden] { display: none; }
+
 .sidebar-foot {
   margin-top: auto;
   padding: 12px 16px 16px;
@@ -697,9 +731,386 @@ td .mono { font-size: 12px; }
   .brand { border-bottom: none; padding: 10px 12px; flex: 0 0 auto; }
   .brand-text small { display: none; }
   .nav { flex-direction: row; padding: 8px; overflow: visible; }
+  .nav-group { flex: 0 0 auto; flex-direction: row; align-items: center; gap: 2px; }
+  .nav-group + .nav-group {
+    margin-top: 0;
+    margin-left: 6px;
+    padding-top: 0;
+    padding-left: 8px;
+    border-top: 0;
+    border-left: 1px solid rgba(255, 255, 255, 0.12);
+  }
+  .nav-group-toggle { width: auto; padding: 9px 8px; white-space: nowrap; opacity: 0.85; }
+  .nav-items { flex-direction: row; }
   .nav-item { white-space: nowrap; }
   .sidebar-foot { display: none; }
   .content { padding: 14px 12px 32px; }
   .topbar { padding: 8px 12px; }
   .chart-wrap { height: 260px; }
 }
+
+/* ======================= 策略回测页 ======================= */
+.bt-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 0 0 10px;
+}
+.bt-pick {
+  padding: 3px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text-soft);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.bt-pick:hover {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+.bt-pick.is-on {
+  background: var(--brand-soft);
+  border-color: var(--brand);
+  color: var(--brand-dark);
+  font-weight: 600;
+}
+.bt-pos {
+  color: var(--up);
+  font-weight: 600;
+}
+.bt-neg {
+  color: var(--down);
+  font-weight: 600;
+}
+.bt-bars {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+  margin-top: 12px;
+}
+.bt-req {
+  margin-top: 10px;
+}
+.bt-req > summary {
+  cursor: pointer;
+}
+.bt-run-row {
+  cursor: pointer;
+}
+[data-page="strategy-backtest"] .badge[data-status="PENDING"] {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+[data-page="strategy-backtest"] tbody tr.is-selected > td {
+  background: var(--brand-soft);
+}
+
+/* ==================== 10-12. 影子交易 / 健康度 / 实盘门禁 ==================== */
+/* 新样式全部按 data-page 作用域挂在这三个页面上，不影响其它页 */
+
+/* ---- 三页共用小件 ---- */
+[data-page="shadow"] .val-pos,
+[data-page="health"] .val-pos,
+[data-page="live"] .val-pos { color: var(--up); font-weight: 600; }
+[data-page="shadow"] .val-neg,
+[data-page="health"] .val-neg,
+[data-page="live"] .val-neg { color: var(--down); font-weight: 600; }
+
+[data-page="shadow"] .badge[data-status="OK"],
+[data-page="health"] .badge[data-status="OK"],
+[data-page="live"] .badge[data-status="OK"],
+[data-page="live"] .badge[data-status="PASS"] {
+  background: var(--ok-soft); color: #0d7a45; border-color: #b9e3ca;
+}
+[data-page="shadow"] .badge[data-status="WARN"],
+[data-page="health"] .badge[data-status="WARN"],
+[data-page="live"] .badge[data-status="WARN"] {
+  background: var(--warn-soft); color: var(--warn); border-color: #f0dcae;
+}
+[data-page="shadow"] .badge[data-status="FAIL"],
+[data-page="health"] .badge[data-status="FAIL"],
+[data-page="live"] .badge[data-status="FAIL"],
+[data-page="live"] .badge[data-status="BLOCK"] {
+  background: var(--danger-soft); color: #a72c2c; border-color: #f3c3c3;
+}
+[data-page="shadow"] .badge[data-status="UNKNOWN"],
+[data-page="health"] .badge[data-status="UNKNOWN"],
+[data-page="live"] .badge[data-status="UNKNOWN"] {
+  background: #f1f2f5; color: #7a8699; border-color: #e2e5eb;
+}
+
+/* metric 折叠：单元格内展开，宽屏不撑破表格 */
+[data-page="shadow"] .metric-fold,
+[data-page="health"] .metric-fold,
+[data-page="live"] .metric-fold { display: inline-block; min-width: 64px; }
+[data-page="shadow"] .metric-fold > summary,
+[data-page="health"] .metric-fold > summary,
+[data-page="live"] .metric-fold > summary { cursor: pointer; }
+[data-page="shadow"] .metric-fold .json-out,
+[data-page="health"] .metric-fold .json-out,
+[data-page="live"] .metric-fold .json-out { max-height: 220px; min-width: 260px; white-space: pre-wrap; }
+
+/* ---- 影子交易 ---- */
+[data-page="shadow"] .stat-value.is-time {
+  font-size: 15px;
+  font-family: var(--mono);
+  letter-spacing: -0.2px;
+  line-height: 1.5;
+}
+[data-page="shadow"] .shadow-note {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  margin-top: 12px;
+  padding: 8px 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-alt);
+  font-size: 12.5px;
+}
+[data-page="shadow"] .shadow-note-key { color: var(--muted); flex: 0 0 auto; }
+[data-page="shadow"] .shadow-note-val { color: var(--text-soft); word-break: break-all; }
+[data-page="shadow"] .shadow-subhead {
+  margin: 16px 0 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+[data-page="shadow"] .shadow-pf-kv { margin-top: 0; }
+[data-page="shadow"] .shadow-chart { height: 260px; }
+
+/* ---- 健康度 ---- */
+[data-page="health"] .health-summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+[data-page="health"] .health-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+[data-page="health"] .health-pill strong { font-family: var(--mono); font-size: 16px; }
+[data-page="health"] .health-pill[data-level="OK"] { background: var(--ok-soft); color: #0d7a45; border-color: #b9e3ca; }
+[data-page="health"] .health-pill[data-level="WARN"] { background: var(--warn-soft); color: var(--warn); border-color: #f0dcae; }
+[data-page="health"] .health-pill[data-level="FAIL"] { background: var(--danger-soft); color: #a72c2c; border-color: #f3c3c3; }
+[data-page="health"] .health-pill[data-level="OTHER"] { background: #f1f2f5; color: #7a8699; border-color: #e2e5eb; }
+[data-page="health"] .health-total { color: var(--muted); font-size: 12.5px; }
+[data-page="health"] .health-time { margin-left: auto; color: var(--text-soft); font-size: 12px; }
+[data-page="health"] .health-verdict { margin: 10px 0 0; }
+[data-page="health"] .health-verdict strong[data-verdict="OK"] { color: #0d7a45; }
+[data-page="health"] .health-verdict strong[data-verdict="WARN"] { color: var(--warn); }
+[data-page="health"] .health-verdict strong[data-verdict="FAIL"] { color: var(--danger); }
+[data-page="health"] .health-level { min-width: 116px; }
+
+/* ---- 实盘门禁 ---- */
+[data-page="live"] .live-gate {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+[data-page="live"] .live-gate-cell {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  background: var(--panel-alt);
+}
+[data-page="live"] .live-gate-mode {
+  margin: 4px 0 6px;
+  font-size: 22px;
+  font-weight: 600;
+  font-family: var(--mono);
+}
+[data-page="live"] .live-gate-flag {
+  margin: 2px 0 8px;
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: 0.5px;
+}
+[data-page="live"] .live-gate-flag.is-block { color: var(--danger); }
+[data-page="live"] .live-gate-flag.is-allow { color: var(--ok); }
+[data-page="live"] .live-gate-verdict {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 8px;
+}
+[data-page="live"] .live-gate-verdict-text { font-size: 18px; font-weight: 600; }
+[data-page="live"] .live-blockers-box {
+  margin-top: 14px;
+  padding: 12px 16px;
+  border: 1px solid #f3c3c3;
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+}
+[data-page="live"] .live-blockers-title {
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #a72c2c;
+}
+[data-page="live"] .live-blockers {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: #8f2f2f;
+}
+[data-page="live"] .live-blockers li strong { margin-right: 6px; font-family: var(--mono); }
+[data-page="live"] .live-gate-ok {
+  margin-top: 14px;
+  padding: 12px 16px;
+  border: 1px solid #b9e3ca;
+  border-radius: var(--radius-sm);
+  background: var(--ok-soft);
+  color: #0d7a45;
+  font-size: 12.5px;
+}
+[data-page="live"] .live-gate-hint { margin-top: 10px; }
+[data-page="live"] .live-account-off {
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-alt);
+}
+[data-page="live"] .live-account-off-title { font-weight: 600; }
+[data-page="live"] .live-account-off-reason { margin-top: 6px; font-size: 12.5px; color: var(--text-soft); }
+[data-page="live"] .live-account-off-meta { margin-top: 8px; font-size: 12px; color: var(--muted); }
+[data-page="live"] .live-account-on {
+  padding: 12px 16px;
+  border: 1px solid #b9e3ca;
+  border-radius: var(--radius-sm);
+  background: var(--ok-soft);
+  color: #0d7a45;
+  font-size: 12.5px;
+}
+[data-page="live"] .live-account-head { margin-top: 14px; }
+[data-page="live"] .live-caps-grid { margin-top: 0; }
+
+/* 下单结果里的「被门禁拦截（符合预期）」提示：琥珀色，不做成错误红 */
+[data-page="live"] .live-block-note {
+  padding: 14px 16px;
+  border: 1px solid #f0dcae;
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+}
+[data-page="live"] .live-block-note-title {
+  margin-bottom: 6px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #8a6415;
+}
+[data-page="live"] .live-block-note-sub {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #8a6415;
+}
+[data-page="live"] .live-http {
+  display: inline-block;
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  border: 1px solid #f3c3c3;
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: #a72c2c;
+  font-size: 12px;
+}
+
+/* 二次确认弹窗里的明细（弹窗挂在 body 下，不在 data-page 作用域内，用专属类名隔离） */
+.live-confirm-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.8;
+}
+.live-confirm-list code { font-family: var(--mono); font-size: 12px; }
+
+/* ==========================================================================
+   16. 账户 / 我的订单 / 马丁策略（只读页）
+   ========================================================================== */
+
+/* 正负值配色（live 页的 .val-pos/.val-neg 只在 [data-page="live"] 生效，这里为三页补一套） */
+[data-page="account"] .val-pos,
+[data-page="orders"] .val-pos,
+[data-page="strategies"] .val-pos { color: var(--up); font-weight: 600; }
+[data-page="account"] .val-neg,
+[data-page="orders"] .val-neg,
+[data-page="strategies"] .val-neg { color: var(--down); font-weight: 600; }
+
+/* 可点击行（策略列表）：整行可点开/收起详情 */
+tbody tr.row-link { cursor: pointer; }
+tbody tr.row-link:hover > td { background: #f7faff; }
+[data-page="strategies"] tbody tr.is-selected > td {
+  background: var(--brand-soft);
+  box-shadow: inset 2px 0 0 var(--brand);
+}
+
+/* 长字符串（如凭证来源 env:OKX_API_KEY/...）在 kv 格子里折行，避免溢出被裁 */
+[data-page="account"] .kv-val,
+[data-page="orders"] .kv-val,
+[data-page="strategies"] .kv-val { word-break: break-all; text-align: right; }
+
+/* 详情卡内的分区标题与小标签 */
+.detail-block { margin: 16px 0 0; }
+.detail-block:first-child { margin-top: 0; }
+.detail-block > h4 {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-soft);
+}
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-static {
+  display: inline-block;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-alt);
+  color: var(--text-soft);
+  font-size: 11.5px;
+}
+
+/* 三页新增的状态徽标（badge 默认样式之外补几个映射） */
+.badge[data-status="FILLED"] { background: var(--ok-soft); color: #0d7a45; border-color: #b9e3ca; }
+.badge[data-status="CANDIDATE"] { background: var(--warn-soft); color: #8a6415; border-color: #f0dcae; }
+.badge[data-status="PROMOTED"] { background: var(--brand-soft); color: var(--brand-dark); border-color: #c7dbfb; }
+.badge[data-status="OPEN"] { background: var(--brand-soft); color: var(--brand-dark); border-color: #c7dbfb; }
+.badge[data-status="CLOSED"] { background: #f1f2f5; color: #7a8699; border-color: #e2e5eb; }
+.badge[data-status="live"] { background: var(--brand-soft); color: var(--brand-dark); border-color: #c7dbfb; }
+.badge[data-status="partially_filled"] { background: var(--warn-soft); color: #8a6415; border-color: #f0dcae; }
+.badge[data-status="canceled"] { background: #f1f2f5; color: #7a8699; border-color: #e2e5eb; }
+
+/* 详情卡里的内联表格不带 .table-wrap 容器，补一版紧凑样式 */
+#strategies-detail table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+#strategies-detail thead th {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-strong);
+  background: var(--panel-alt);
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+#strategies-detail tbody td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+#strategies-detail th.num,
+#strategies-detail td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+

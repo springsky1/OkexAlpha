@@ -1,6 +1,5 @@
 package com.okexalpha.client.model;
 
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -10,6 +9,7 @@ import com.okexalpha.domain.KlineType;
 
 /**
  * K 线数组解析。CANDLE 9 列：ts,o,h,l,c,vol,volCcy,volCcyQuote,confirm；MARK 6 列：ts,o,h,l,c,confirm。
+ * 数值按 double 解析（对应表里的 double precision），OKX 偶发空字符串按 null 处理。
  */
 public final class CandleParser {
 
@@ -25,21 +25,21 @@ public final class CandleParser {
             throw new IllegalArgumentException("candle element needs " + required + " columns but got " + node.size());
         }
         long ts = node.get(0).asLong();
-        BigDecimal open = decimal(node.get(1));
-        BigDecimal high = decimal(node.get(2));
-        BigDecimal low = decimal(node.get(3));
-        BigDecimal close = decimal(node.get(4));
-        BigDecimal vol = null;
-        BigDecimal volCcy = null;
-        BigDecimal volCcyQuote = null;
+        Double open = number(node.get(1));
+        Double high = number(node.get(2));
+        Double low = number(node.get(3));
+        Double close = number(node.get(4));
+        Double vol = null;
+        Double volCcy = null;
+        Double volCcyQuote = null;
         int confirmIndex = 5;
         if (klineType.hasVolume()) {
-            vol = decimal(node.get(5));
-            volCcy = decimal(node.get(6));
-            volCcyQuote = decimal(node.get(7));
+            vol = number(node.get(5));
+            volCcy = number(node.get(6));
+            volCcyQuote = number(node.get(7));
             confirmIndex = 8;
         }
-        int confirm = node.get(confirmIndex).asInt(0);
+        boolean confirm = node.get(confirmIndex).asInt(0) == 1;
         return new KlineRow(klineType.name(), instId, bar, ts, instType,
                 open, high, low, close, vol, volCcy, volCcyQuote, confirm);
     }
@@ -57,7 +57,7 @@ public final class CandleParser {
     }
 
     /** OKX 偶发空字符串，按 null 处理。 */
-    static BigDecimal decimal(JsonNode node) {
+    static Double number(JsonNode node) {
         if (node == null || node.isNull()) {
             return null;
         }
@@ -65,6 +65,6 @@ public final class CandleParser {
         if (text == null || text.isBlank()) {
             return null;
         }
-        return new BigDecimal(text.trim());
+        return Double.parseDouble(text.trim());
     }
 }

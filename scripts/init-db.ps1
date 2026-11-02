@@ -6,13 +6,17 @@ param(
     [string]$PgHost = "localhost",
     [int]$PgPort = 5432,
     [string]$PgUser = "postgres",
-    [string]$PgPassword = "123456",
+    [string]$PgPassword = $env:OKX_DB_PASSWORD,
     [string]$Database = "okex_alpha",
     [string]$Psql = "D:\Program Files\PostgreSQL\18\bin\psql.exe"
 )
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
+
+if ([string]::IsNullOrEmpty($PgPassword)) {
+    throw "PG password not provided. Set the OKX_DB_PASSWORD environment variable or pass -PgPassword <value>."
+}
 
 if (-not (Test-Path $Psql)) {
     $cmd = Get-Command psql -ErrorAction SilentlyContinue

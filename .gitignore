@@ -7,3 +7,26 @@ logs/
 .vscode/
 *.iml
 .DS_Store
+
+# ---------------------------------------------------------------------------
+# 凭证与个人隐私：以下路径/文件名一律不得进入 git（含 okx API Key/Secret/Passphrase）
+# ---------------------------------------------------------------------------
+.env
+.env.*
+*.env
+!.env.example
+secrets/
+secrets.*
+*credential*
+*credentials*
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.jks
+*dump.sql
+*.bak
+README.md
+docs/SECURITY.md
+docs

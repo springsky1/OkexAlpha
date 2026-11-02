@@ -38,6 +38,8 @@ public class OkxApiClient {
     public static final String PATH_OI_VOLUME = "/api/v5/rubik/stat/contracts/open-interest-volume";
     public static final String PATH_TAKER_VOLUME = "/api/v5/rubik/stat/taker-volume";
     public static final String PATH_TAKER_VOLUME_CONTRACT = "/api/v5/rubik/stat/taker-volume-contract";
+    public static final String PATH_TICKERS = "/api/v5/market/tickers";
+    public static final String PATH_MARK_PRICE = "/api/v5/public/mark-price";
 
     private final OkxProperties properties;
     private final HttpTransport transport;
@@ -154,6 +156,29 @@ public class OkxApiClient {
         return elements(fetchData(PATH_OPEN_INTEREST, instId, query));
     }
 
+    // ---------------------------------------------------------------- market
+
+    /** 行情快照：instType=SPOT/SWAP/FUTURES/OPTION。返回 last/bidPx/askPx/vol24h/volCcy24h/ts 等。 */
+    public List<JsonNode> getTickers(String instType) {
+        Map<String, String> query = new LinkedHashMap<>();
+        if (instType != null && !instType.isBlank()) {
+            query.put("instType", instType);
+        }
+        return elements(fetchData(PATH_TICKERS, null, query));
+    }
+
+    /** 标记价格：instType + 可选 instFamily/instId。 */
+    public List<JsonNode> getMarkPrices(String instType, String instFamily) {
+        Map<String, String> query = new LinkedHashMap<>();
+        if (instType != null && !instType.isBlank()) {
+            query.put("instType", instType);
+        }
+        if (instFamily != null && !instFamily.isBlank()) {
+            query.put("instFamily", instFamily);
+        }
+        return elements(fetchData(PATH_MARK_PRICE, null, query));
+    }
+
     // ---------------------------------------------------------------- core
 
     JsonNode fetchData(String path, String instId, Map<String, String> query) {
@@ -162,7 +187,7 @@ public class OkxApiClient {
         OkxApiException lastFailure = null;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
             if (properties.rateLimit().enabled()) {
-                rateLimiter.acquire(group);
+                rateLimiter.acquire(group, OkxClientConfig.GROUP_GLOBAL);
             }
             URI uri = buildUri(path, query);
             long startNanos = System.nanoTime();

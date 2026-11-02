@@ -3,7 +3,6 @@ package com.okexalpha.client.model;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
-import java.math.BigDecimal;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
@@ -15,7 +14,7 @@ import com.okexalpha.domain.KlineRow;
 import com.okexalpha.domain.KlineType;
 import com.okexalpha.support.Fixtures;
 
-/** CandleParser：9 列 CANDLE / 6 列 MARK / 脏数据。 */
+/** CandleParser：9 列 CANDLE / 6 列 MARK / 脏数据。数值列是 double precision，confirm 是 boolean。 */
 class CandleParserTest {
 
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
@@ -33,20 +32,20 @@ class CandleParserTest {
         assertThat(first.instType()).isEqualTo("SWAP");
         assertThat(first.bar()).isEqualTo("1H");
         assertThat(first.tsMs()).isEqualTo(1735686000000L);
-        assertThat(first.open()).isEqualByComparingTo("93450.1");
-        assertThat(first.high()).isEqualByComparingTo("93600.0");
-        assertThat(first.low()).isEqualByComparingTo("93300.5");
-        assertThat(first.close()).isEqualByComparingTo("93550.2");
-        assertThat(first.vol()).isEqualByComparingTo("120.55");
-        assertThat(first.volCcy()).isEqualByComparingTo("120.55");
-        assertThat(first.volCcyQuote()).isEqualByComparingTo("11278000.0");
-        assertThat(first.confirm()).isZero();
+        assertThat(first.open()).isEqualTo(93450.1);
+        assertThat(first.high()).isEqualTo(93600.0);
+        assertThat(first.low()).isEqualTo(93300.5);
+        assertThat(first.close()).isEqualTo(93550.2);
+        assertThat(first.vol()).isEqualTo(120.55);
+        assertThat(first.volCcy()).isEqualTo(120.55);
+        assertThat(first.volCcyQuote()).isEqualTo(11278000.0);
+        assertThat(first.confirm()).isFalse();
 
         KlineRow second = rows.get(1);
         assertThat(second.tsMs()).isEqualTo(1735689600000L);
-        assertThat(second.close()).isEqualByComparingTo("93510.7");
-        assertThat(second.vol()).isEqualByComparingTo("98.31");
-        assertThat(second.confirm()).isEqualTo(1);
+        assertThat(second.close()).isEqualTo(93510.7);
+        assertThat(second.vol()).isEqualTo(98.31);
+        assertThat(second.confirm()).isTrue();
     }
 
     @Test
@@ -60,13 +59,13 @@ class CandleParserTest {
         assertThat(first.klineType()).isEqualTo("MARK");
         assertThat(first.instId()).isEqualTo("BTC-USDT-SWAP");
         assertThat(first.tsMs()).isEqualTo(1735686000000L);
-        assertThat(first.open()).isEqualByComparingTo("93450.1");
-        assertThat(first.close()).isEqualByComparingTo("93550.2");
+        assertThat(first.open()).isEqualTo(93450.1);
+        assertThat(first.close()).isEqualTo(93550.2);
         assertThat(first.vol()).isNull();
         assertThat(first.volCcy()).isNull();
         assertThat(first.volCcyQuote()).isNull();
-        assertThat(first.confirm()).isZero();
-        assertThat(rows.get(1).confirm()).isEqualTo(1);
+        assertThat(first.confirm()).isFalse();
+        assertThat(rows.get(1).confirm()).isTrue();
     }
 
     @Test
@@ -79,9 +78,9 @@ class CandleParserTest {
 
         assertThat(row.klineType()).isEqualTo("MARK");
         assertThat(row.tsMs()).isEqualTo(1735693200000L);
-        assertThat(row.close()).isEqualByComparingTo("93050.0");
+        assertThat(row.close()).isEqualTo(93050.0);
         assertThat(row.vol()).isNull();
-        assertThat(row.confirm()).isEqualTo(1);
+        assertThat(row.confirm()).isTrue();
     }
 
     @Test
@@ -91,7 +90,7 @@ class CandleParserTest {
         assertThat(blankVolume.vol()).isNull();
         assertThat(blankVolume.volCcy()).isNull();
         assertThat(blankVolume.volCcyQuote()).isNull();
-        assertThat(blankVolume.close()).isEqualByComparingTo("93600.0");
+        assertThat(blankVolume.close()).isEqualTo(93600.0);
 
         JsonNode allBlank = MAPPER.readTree("""
                 ["1735693200000","","  ","","","","","","0"]
@@ -140,14 +139,15 @@ class CandleParserTest {
     }
 
     @Test
-    void parsesDecimalAsBigDecimal() {
+    void parsesNumbersAsDouble() {
         JsonNode node = MAPPER.readTree("""
                 ["1735686000000","0.00000001","1.5","0.5","2.25","3","4","5","0"]
                 """);
 
         KlineRow row = CandleParser.parse(node, KlineType.CANDLE, "BTC-USDT-SWAP", "SWAP", "1m");
 
-        assertThat(row.open()).isEqualTo(new BigDecimal("0.00000001"));
-        assertThat(row.high()).isEqualByComparingTo("1.5");
+        assertThat(row.open()).isEqualTo(0.00000001);
+        assertThat(row.high()).isEqualTo(1.5);
+        assertThat(row.confirm()).isFalse();
     }
 }

@@ -37,4 +37,28 @@ public class JdkHttpTransport implements HttpTransport {
                 HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         return new TransportResponse(response.statusCode(), response.body());
     }
+
+    @Override
+    public TransportResponse post(URI uri, Map<String, String> headers, String body)
+            throws IOException, InterruptedException {
+        return sendWithBody("POST", uri, headers, body);
+    }
+
+    @Override
+    public TransportResponse put(URI uri, Map<String, String> headers, String body)
+            throws IOException, InterruptedException {
+        return sendWithBody("PUT", uri, headers, body);
+    }
+
+    private TransportResponse sendWithBody(String method, URI uri, Map<String, String> headers, String body)
+            throws IOException, InterruptedException {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
+                .timeout(readTimeout)
+                .header("Content-Type", "application/json")
+                .method(method, HttpRequest.BodyPublishers.ofString(body == null ? "" : body, StandardCharsets.UTF_8));
+        headers.forEach(builder::header);
+        HttpResponse<String> response = client.send(builder.build(),
+                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        return new TransportResponse(response.statusCode(), response.body());
+    }
 }

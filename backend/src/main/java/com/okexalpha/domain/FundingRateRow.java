@@ -1,22 +1,20 @@
 package com.okexalpha.domain;
 
-import java.math.BigDecimal;
-
-/** okx_funding_rate 一行（资金时间为主键一部分）。 */
+/** okx_funding_rate 一行（资金时间为主键一部分）；比率列与表一致使用 double precision。 */
 public record FundingRateRow(
         String instId,
         String instType,
         long fundingTimeMs,
-        BigDecimal fundingRate,
-        BigDecimal realizedRate,
+        Double fundingRate,
+        Double realizedRate,
         String method,
         String formulaType,
         boolean settled,
-        BigDecimal premium,
-        BigDecimal interestRate,
+        Double premium,
+        Double interestRate,
         Long nextFundingTimeMs,
-        BigDecimal impactValue,
-        BigDecimal minFundingRate,
-        BigDecimal maxFundingRate,
+        Double impactValue,
+        Double minFundingRate,
+        Double maxFundingRate,
         Long tsMs) {
 }

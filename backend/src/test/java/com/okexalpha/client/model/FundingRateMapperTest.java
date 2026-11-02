@@ -15,7 +15,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import com.okexalpha.domain.FundingRateRow;
 
-/** FundingRateMapper：DTO -> 行，含 settled 推导与字符串数值转换。 */
+/** FundingRateMapper：DTO -> 行，含 settled 推导与字符串数值转换。比率列是 double precision。 */
 class FundingRateMapperTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -30,17 +30,17 @@ class FundingRateMapperTest {
         assertThat(settled.instId()).isEqualTo("BTC-USDT-SWAP");
         assertThat(settled.instType()).isEqualTo("SWAP");
         assertThat(settled.fundingTimeMs()).isEqualTo(1735689600000L);
-        assertThat(settled.fundingRate()).isEqualByComparingTo("0.00012345");
-        assertThat(settled.realizedRate()).isEqualByComparingTo("0.00012000");
+        assertThat(settled.fundingRate()).isEqualTo(0.00012345);
+        assertThat(settled.realizedRate()).isEqualTo(0.00012);
         assertThat(settled.method()).isEqualTo("current_period");
         assertThat(settled.formulaType()).isEqualTo("withRateLimt");
         assertThat(settled.settled()).isTrue();
-        assertThat(settled.premium()).isEqualByComparingTo("0.00020000");
-        assertThat(settled.interestRate()).isEqualByComparingTo("0.00010000");
+        assertThat(settled.premium()).isEqualTo(0.0002);
+        assertThat(settled.interestRate()).isEqualTo(0.0001);
         assertThat(settled.nextFundingTimeMs()).isEqualTo(1735718400000L);
-        assertThat(settled.impactValue()).isEqualByComparingTo("15000.0");
-        assertThat(settled.minFundingRate()).isEqualByComparingTo("-0.00375");
-        assertThat(settled.maxFundingRate()).isEqualByComparingTo("0.00375");
+        assertThat(settled.impactValue()).isEqualTo(15000.0);
+        assertThat(settled.minFundingRate()).isEqualTo(-0.00375);
+        assertThat(settled.maxFundingRate()).isEqualTo(0.00375);
         assertThat(settled.tsMs()).isEqualTo(1735689601000L);
 
         FundingRateRow unsettled = rows.get(1);
@@ -101,5 +101,11 @@ class FundingRateMapperTest {
         assertThat(FundingRateMapper.parseLongOrNull("  12 ")).isEqualTo(12L);
         assertThat(FundingRateMapper.decimal("")).isNull();
         assertThat(FundingRateMapper.decimal(" 1.5 ")).isEqualByComparingTo("1.5");
+    }
+
+    @Test
+    void dblIsNullSafe() {
+        assertThat(FundingRateMapper.dbl(null)).isNull();
+        assertThat(FundingRateMapper.dbl(new java.math.BigDecimal("0.00012345"))).isEqualTo(0.00012345);
     }
 }

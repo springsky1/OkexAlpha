@@ -6,7 +6,7 @@ import java.util.List;
 
 import com.okexalpha.domain.FundingRateRow;
 
-/** OkxFundingRate -> FundingRateRow。 */
+/** OkxFundingRate -> FundingRateRow（DTO 用 BigDecimal 承接 OKX 的字符串数值，落库前转 double）。 */
 public final class FundingRateMapper {
 
     private FundingRateMapper() {
@@ -24,17 +24,17 @@ public final class FundingRateMapper {
                 dto.instId(),
                 dto.instType() != null ? dto.instType() : defaultInstType,
                 fundingTime,
-                dto.fundingRate(),
-                dto.realizedRate(),
+                dbl(dto.fundingRate()),
+                dbl(dto.realizedRate()),
                 dto.method(),
                 dto.formulaType(),
                 settled,
-                dto.premium(),
-                dto.interestRate(),
+                dbl(dto.premium()),
+                dbl(dto.interestRate()),
                 parseLongOrNull(dto.nextFundingTime()),
-                dto.impactValue(),
-                dto.minFundingRate(),
-                dto.maxFundingRate(),
+                dbl(dto.impactValue()),
+                dbl(dto.minFundingRate()),
+                dbl(dto.maxFundingRate()),
                 parseLongOrNull(dto.ts()));
     }
 
@@ -66,6 +66,11 @@ public final class FundingRateMapper {
         } catch (NumberFormatException ex) {
             return null;
         }
+    }
+
+    /** BigDecimal -> double（落库列类型 double precision）。 */
+    public static Double dbl(BigDecimal value) {
+        return value == null ? null : value.doubleValue();
     }
 
     public static BigDecimal decimal(String text) {

@@ -227,3 +227,228 @@ CREATE TABLE IF NOT EXISTS okx_schema_migration (
     duration_ms bigint,
     applied_at  timestamptz NOT NULL DEFAULT now()
 );
+
+-- =====================================================================
+-- 策略相关（阶段 C）：最小下单量 / 策略 / 回测 / 影子 / 健康度 / 组合快照
+-- 数值列统一 double precision（价格/金额/比率，回测里做浮点运算，8 字节省空间）
+-- =====================================================================
+
+-- 14. 最小下单量快照（由 market/tickers + okx_instrument 计算，见 MinOrderService）
+CREATE TABLE IF NOT EXISTS okx_min_order (
+    inst_id                    text PRIMARY KEY,
+    inst_type                  text,
+    settle_ccy                 text,
+    ct_val                     double precision,
+    ct_val_ccy                 text,
+    ct_mult                    double precision,
+    lot_sz                     double precision,
+    min_sz                     double precision,
+    tick_sz                    double precision,
+    ref_px                     double precision,
+    notional_per_contract_usd  double precision,
+    min_notional_usd           double precision,
+    min_lots                   double precision,
+    tradable                   boolean NOT NULL DEFAULT false,
+    note                       text,
+    refreshed_at               timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_okx_min_order_tradable ON okx_min_order (tradable, inst_id);
+
+-- 15. 策略定义（params 为完整参数字典，universe 为币种/合约清单 JSON）
+CREATE TABLE IF NOT EXISTS okx_strategy (
+    id            bigserial PRIMARY KEY,
+    name          text NOT NULL,
+    status        text NOT NULL DEFAULT 'DRAFT',
+    params        jsonb NOT NULL DEFAULT '{}'::jsonb,
+    universe      jsonb,
+    mode          text NOT NULL DEFAULT 'SHADOW',
+    capital_per_coin_usd double precision,
+    source_run_id bigint,
+    note          text,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    updated_at    timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT uq_okx_strategy_name UNIQUE (name),
+    CONSTRAINT ck_okx_strategy_status CHECK (status IN ('DRAFT', 'CANDIDATE', 'PROMOTED', 'ARCHIVED'))
+);
+
+-- 16. 回测批次（一次提交 = 一个 run，内含若干参数组合）
+CREATE TABLE IF NOT EXISTS okx_backtest_run (
+    id            bigserial PRIMARY KEY,
+    strategy_id   bigint REFERENCES okx_strategy (id) ON DELETE SET NULL,
+    label         text,
+    status        text NOT NULL DEFAULT 'PENDING',
+    bar           text,
+    start_ms      bigint,
+    end_ms        bigint,
+    params        jsonb,
+    phase         text,
+    request       jsonb,
+    coin_total    integer NOT NULL DEFAULT 0,
+    coin_done     integer NOT NULL DEFAULT 0,
+    combos_total  integer NOT NULL DEFAULT 0,
+    combos_done   integer NOT NULL DEFAULT 0,
+    best_result_id bigint,
+    error         text,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    started_at    timestamptz,
+    finished_at   timestamptz,
+    updated_at    timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT ck_okx_bt_run_status CHECK (status IN ('PENDING', 'RUNNING', 'DONE', 'FAILED', 'CANCELED'))
+);
+CREATE INDEX IF NOT EXISTS idx_okx_bt_run_status ON okx_backtest_run (status, created_at DESC);
+
+-- 17. 回测结果（每个参数组合一行）
+CREATE TABLE IF NOT EXISTS okx_backtest_result (
+    id                 bigserial PRIMARY KEY,
+    run_id             bigint NOT NULL REFERENCES okx_backtest_run (id) ON DELETE CASCADE,
+    param_key          text NOT NULL,
+    params             jsonb,
+    inst_id            text,
+    segment            text NOT NULL DEFAULT 'FULL',
+    metrics            jsonb,
+    coin_count         integer NOT NULL DEFAULT 0,
+    trade_count        integer NOT NULL DEFAULT 0,
+    win_rate           double precision,
+    gross_pnl          double precision,
+    fee_paid           double precision,
+    funding_paid       double precision,
+    net_pnl            double precision,
+    net_pnl_pct        double precision,
+    max_drawdown_pct   double precision,
+    sharpe             double precision,
+    liquidation_count  integer NOT NULL DEFAULT 0,
+    oos_net_pnl        double precision,
+    oos_net_pnl_pct    double precision,
+    verdict            text,
+    rank               integer,
+    created_at         timestamptz NOT NULL DEFAULT now()
+);
+-- 同一参数组合可以同时有聚合行（segment='ALL'）与单币明细行（segment='COIN'）：
+-- 唯一索引 uq_okx_bt_result_key 依赖 007 新增的 inst_id/segment 列，由
+-- db/migrations/008_backtest_result_keys.sql 统一创建（升级库上 schema.sql 先于迁移执行）。
+CREATE INDEX IF NOT EXISTS idx_okx_bt_result_run ON okx_backtest_result (run_id, rank);
+-- (run_id, inst_id, segment) 索引依赖 007 迁移新增的 inst_id/segment 列，统一由
+-- db/migrations/007_strategy_backtest_columns.sql 创建；schema.sql 在升级库上先于迁移执行，
+-- 这里不能引用尚未补齐的列，否则启动即报 "字段 inst_id 不存在"。
+
+-- 18. 回测逐笔成交
+CREATE TABLE IF NOT EXISTS okx_backtest_trade (
+    id            bigserial PRIMARY KEY,
+    run_id        bigint NOT NULL REFERENCES okx_backtest_run (id) ON DELETE CASCADE,
+    result_id     bigint REFERENCES okx_backtest_result (id) ON DELETE CASCADE,
+    inst_id       text NOT NULL,
+    side          text,
+    layers        integer NOT NULL DEFAULT 1,
+    avg_entry     double precision,
+    max_adverse_pct double precision,
+    entry_ts_ms   bigint,
+    exit_ts_ms    bigint,
+    entry_px      double precision,
+    exit_px       double precision,
+    sz            double precision,
+    notional_usd  double precision,
+    pnl           double precision,
+    pnl_pct       double precision,
+    fee           double precision,
+    funding_paid  double precision,
+    exit_reason   text,
+    created_at    timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_okx_bt_trade_result ON okx_backtest_trade (result_id, entry_ts_ms);
+CREATE INDEX IF NOT EXISTS idx_okx_bt_trade_run ON okx_backtest_trade (run_id, inst_id);
+
+-- 19. 回测资金曲线（每个组合按时间点一行）
+CREATE TABLE IF NOT EXISTS okx_backtest_equity (
+    result_id     bigint NOT NULL REFERENCES okx_backtest_result (id) ON DELETE CASCADE,
+    ts_ms         bigint NOT NULL,
+    equity        double precision,
+    drawdown_pct  double precision,
+    CONSTRAINT pk_okx_bt_equity PRIMARY KEY (result_id, ts_ms)
+);
+
+-- 20. 影子单（SHADOW 模式下的决策记录，不触达交易所）
+CREATE TABLE IF NOT EXISTS okx_shadow_order (
+    id            bigserial PRIMARY KEY,
+    strategy_id   bigint,
+    inst_id       text NOT NULL,
+    side          text,
+    ord_type      text,
+    sz            double precision,
+    px            double precision,
+    notional_usd  double precision,
+    status        text NOT NULL DEFAULT 'NEW',
+    reason        text,
+    signal_ts_ms  bigint,
+    decided_at    timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT ck_okx_shadow_order_status CHECK (status IN ('NEW', 'FILLED', 'REJECTED', 'CANCELED'))
+);
+CREATE INDEX IF NOT EXISTS idx_okx_shadow_order_time ON okx_shadow_order (decided_at DESC);
+CREATE INDEX IF NOT EXISTS idx_okx_shadow_order_inst ON okx_shadow_order (inst_id, decided_at DESC);
+
+-- 21. 影子持仓（本地账本，含保证金与强平价估算）
+CREATE TABLE IF NOT EXISTS okx_shadow_position (
+    id             bigserial PRIMARY KEY,
+    strategy_id    bigint,
+    inst_id        text NOT NULL,
+    side           text NOT NULL,
+    sz             double precision NOT NULL,
+    entry_px       double precision,
+    mark_px        double precision,
+    notional_usd   double precision,
+    unrealized_pnl double precision,
+    leverage       double precision,
+    liq_px         double precision,
+    margin_usd     double precision,
+    status         text NOT NULL DEFAULT 'OPEN',
+    opened_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at     timestamptz NOT NULL DEFAULT now(),
+    closed_at      timestamptz,
+    CONSTRAINT ck_okx_shadow_pos_status CHECK (status IN ('OPEN', 'CLOSED'))
+);
+CREATE INDEX IF NOT EXISTS idx_okx_shadow_pos_status ON okx_shadow_position (status, inst_id);
+
+-- 22. 策略健康度检查（@Scheduled 每 60s 一轮，每次每规则一行）
+CREATE TABLE IF NOT EXISTS okx_health_check (
+    id         bigserial PRIMARY KEY,
+    checked_at timestamptz NOT NULL DEFAULT now(),
+    rule       text NOT NULL,
+    level      text NOT NULL,
+    scope      text,
+    inst_id    text,
+    message    text,
+    metric     jsonb,
+    CONSTRAINT ck_okx_health_level CHECK (level IN ('OK', 'WARN', 'FAIL'))
+);
+CREATE INDEX IF NOT EXISTS idx_okx_health_time ON okx_health_check (checked_at DESC);
+CREATE INDEX IF NOT EXISTS idx_okx_health_rule ON okx_health_check (rule, checked_at DESC);
+
+-- 23. 组合快照（权益/可用/持仓数/名义敞口）
+CREATE TABLE IF NOT EXISTS okx_portfolio_snapshot (
+    id                 bigserial PRIMARY KEY,
+    ts_ms              bigint NOT NULL,
+    equity_usd         double precision,
+    available_usd      double precision,
+    position_count     integer,
+    gross_notional_usd double precision,
+    net_notional_usd   double precision,
+    unrealized_pnl_usd double precision,
+    detail             jsonb,
+    created_at         timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT uq_okx_portfolio_ts UNIQUE (ts_ms)
+);
+
+-- 24. 凭证保险库（OKX API Key/Secret/Passphrase 只以 AES-256-GCM 密文入库，单行 id=1）
+-- 与 db/migrations/009_credential_vault.sql 等价：全新库建表在这里，老库靠迁移补齐。
+CREATE TABLE IF NOT EXISTS okx_credential_vault (
+    id             integer PRIMARY KEY,
+    label          text NOT NULL DEFAULT 'OkexAlpha',
+    api_key_enc    text NOT NULL,
+    secret_key_enc text NOT NULL,
+    passphrase_enc text NOT NULL,
+    key_version    integer NOT NULL DEFAULT 1,
+    updated_at     timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT ck_okx_credential_vault_single_row CHECK (id = 1)
+);
+COMMENT ON TABLE okx_credential_vault IS
+    'OKX API 凭证保险库：三件套均为 AES-256-GCM 密文（v1:base64(nonce||ct||tag)）；主密钥来自环境变量 OKX_MASTER_KEY';
+COMMENT ON COLUMN okx_credential_vault.label IS 'Key 备注名，非机密（默认 OkexAlpha）';

@@ -26,6 +26,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 import com.okexalpha.client.OkxApiClient;
 import com.okexalpha.client.model.OkxFundingRate;
+import com.okexalpha.config.OkxProperties;
 import com.okexalpha.domain.BackfillTaskRow;
 import com.okexalpha.domain.DataType;
 import com.okexalpha.repository.FundingRateRepository;
@@ -57,7 +58,8 @@ class FundingPaginationTest {
             return null;
         }).when(pageWriter).write(anyLong(), any(Runnable.class), any(), anyInt(), anyLong(), anyBoolean());
 
-        handler = new FundingRateTaskHandler(client, repository, pageWriter, MAPPER);
+        OkxProperties properties = OkxProperties.defaults();
+        handler = new FundingRateTaskHandler(client, repository, new PageBatcher(pageWriter, properties), MAPPER);
     }
 
     private static OkxFundingRate funding(long fundingTimeMs) {
@@ -98,8 +100,8 @@ class FundingPaginationTest {
 
         assertThat(outcome.rowsWritten()).isEqualTo(2L);
         assertThat(outcome.truncated()).isTrue();
-        assertThat(cursors).containsExactly(older, older);
-        assertThat(truncationFlags).containsExactly(false, true);
+        assertThat(cursors).containsExactly(older);
+        assertThat(truncationFlags).containsExactly(true);
         verify(repository, times(1)).upsertAll(anyList());
     }
 

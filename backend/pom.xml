@@ -57,12 +57,13 @@
       <resource>
         <directory>src/main/resources</directory>
       </resource>
-      <!-- 仓库根 db/schema.sql 也打进 classpath:db/schema.sql，供 SchemaInitializer 启动自检 -->
+      <!-- 仓库根 db/schema.sql + db/migrations/*.sql 打进 classpath:db/，供启动时建表与增量迁移 -->
       <resource>
         <directory>${project.basedir}/../db</directory>
         <targetPath>db</targetPath>
         <includes>
           <include>schema.sql</include>
+          <include>migrations/*.sql</include>
         </includes>
       </resource>
     </resources>

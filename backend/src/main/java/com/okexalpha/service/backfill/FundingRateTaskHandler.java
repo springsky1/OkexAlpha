@@ -15,7 +15,10 @@ import com.okexalpha.domain.DataType;
 import com.okexalpha.domain.FundingRateRow;
 import com.okexalpha.repository.FundingRateRepository;
 
-/** 资金费率历史补拉：空页即到达 OKX 保留边界（约 96 天），标记 truncated。 */
+/**
+ * 资金费率历史补拉：空页即到达 OKX 保留边界（约 96 天），标记 truncated。
+ * 每 okx.db.commit-every-pages 页合并一次事务提交（见 {@link PageBatcher}）。
+ */
 @Component
 public class FundingRateTaskHandler implements BackfillTaskHandler {
 
@@ -24,14 +27,14 @@ public class FundingRateTaskHandler implements BackfillTaskHandler {
 
     private final OkxApiClient client;
     private final FundingRateRepository fundingRateRepository;
-    private final BackfillPageWriter pageWriter;
+    private final PageBatcher pageBatcher;
     private final ObjectMapper objectMapper;
 
     public FundingRateTaskHandler(OkxApiClient client, FundingRateRepository fundingRateRepository,
-            BackfillPageWriter pageWriter, ObjectMapper objectMapper) {
+            PageBatcher pageBatcher, ObjectMapper objectMapper) {
         this.client = client;
         this.fundingRateRepository = fundingRateRepository;
-        this.pageWriter = pageWriter;
+        this.pageBatcher = pageBatcher;
         this.objectMapper = objectMapper;
     }
 
@@ -50,8 +53,10 @@ public class FundingRateTaskHandler implements BackfillTaskHandler {
         long rowsWritten = task.rowsWritten();
         boolean truncated = task.truncated();
 
+        PageBatcher.Batch batch = pageBatcher.batch(task.id());
         while (true) {
             if (control.shouldStop()) {
+                batch.flush();
                 return new TaskOutcome(rowsWritten, truncated, "stopped");
             }
             List<OkxFundingRate> data = client.getFundingRateHistory(params.instId(), cursor, null, PAGE);
@@ -60,8 +65,9 @@ public class FundingRateTaskHandler implements BackfillTaskHandler {
                     .toList();
             if (page.isEmpty()) {
                 truncated = true;
-                pageWriter.write(task.id(), () -> {
+                batch.add(() -> {
                 }, cursor, pageCount, rowsWritten, true);
+                batch.flush();
                 log.info("task {} reached retention boundary near {}", task.taskKey(), cursor);
                 break;
             }
@@ -70,13 +76,13 @@ public class FundingRateTaskHandler implements BackfillTaskHandler {
             pageCount++;
             rowsWritten += page.size();
             final List<FundingRateRow> rows = page;
-            pageWriter.write(task.id(), () -> fundingRateRepository.upsertAll(rows), newCursor, pageCount,
-                    rowsWritten, false);
+            batch.add(() -> fundingRateRepository.upsertAll(rows), newCursor, pageCount, rowsWritten, false);
             cursor = newCursor;
             if (cursor <= startMs) {
                 break;
             }
         }
+        batch.flush();
         return new TaskOutcome(rowsWritten, truncated, null);
     }
 

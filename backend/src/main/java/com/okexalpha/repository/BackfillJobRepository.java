@@ -232,11 +232,29 @@ public class BackfillJobRepository {
     }
 
     public int finishTask(long taskId, TaskStatus status, String error, boolean truncated) {
+        if (status == TaskStatus.PENDING) {
+            // 暂停/取消后的重新入队走 requeueTask：语义是「这次执行不算数」，不写错误、不烧重试次数。
+            return requeueTask(taskId, truncated);
+        }
         return jdbcTemplate.update("""
                 UPDATE okx_backfill_task SET status = ?, last_error = ?, truncated = ?,
                        finished_at = coalesce(finished_at, now()), updated_at = now()
                  WHERE id = ?
                 """, status.name(), error, truncated, taskId);
+    }
+
+    /**
+     * 把任务重新放回待执行队列，并把 claimTask 时自增的 attempts 还回去。
+     *
+     * <p>pause/cancel 触发的重新入队不是失败，如果也算一次尝试，反复启停几次之后
+     * attempts 就会先耗尽，任务真正遇到上游错误时反而没有重试机会。
+     */
+    public int requeueTask(long taskId, boolean truncated) {
+        return jdbcTemplate.update("""
+                UPDATE okx_backfill_task SET status = 'PENDING', truncated = ?, finished_at = NULL,
+                       attempts = greatest(attempts - 1, 0), updated_at = now()
+                 WHERE id = ?
+                """, truncated, taskId);
     }
 
     public int releaseTask(long taskId) {

@@ -55,7 +55,7 @@ class BackfillPlannerTest {
                 base.userAgent(), base.retry(), base.rateLimit(),
                 new OkxProperties.Backfill(base.backfill().workerThreads(), base.backfill().queueCapacity(),
                         pageLimit, base.backfill().autoResume(), maxTasksPerJob),
-                base.sync(), base.schedule(), base.apiLog(), base.db());
+                base.sync(), base.schedule(), base.apiLog(), base.db(), base.strategy());
     }
 
     static InstrumentRow instrument(String instId, String instType) {

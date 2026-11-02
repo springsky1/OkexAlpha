@@ -62,7 +62,8 @@ class KlinePaginationTest {
             return null;
         }).when(pageWriter).write(anyLong(), any(Runnable.class), any(), anyInt(), anyLong(), anyBoolean());
 
-        handler = new KlineTaskHandler(client, OkxProperties.defaults(), repository, pageWriter, MAPPER);
+        OkxProperties properties = OkxProperties.defaults();
+        handler = new KlineTaskHandler(client, properties, repository, new PageBatcher(pageWriter, properties), MAPPER);
     }
 
     private static JsonNode candle(long tsMs) {
@@ -96,9 +97,9 @@ class KlinePaginationTest {
         assertThat(outcome.rowsWritten()).isEqualTo(4L);
         assertThat(outcome.truncated()).isFalse();
         assertThat(outcome.note()).isNull();
-        assertThat(cursors).containsExactly(END - 2 * HOUR, END - 4 * HOUR);
-        assertThat(pageCounts).containsExactly(1, 2);
-        assertThat(truncationFlags).containsExactly(false, false);
+        assertThat(cursors).containsExactly(END - 4 * HOUR);
+        assertThat(pageCounts).containsExactly(2);
+        assertThat(truncationFlags).containsExactly(false);
         verify(repository, times(2)).upsertAll(anyList());
     }
 
@@ -116,7 +117,8 @@ class KlinePaginationTest {
 
         assertThat(calls.get()).isEqualTo(3);
         assertThat(outcome.rowsWritten()).isEqualTo(3L);
-        assertThat(cursors).containsExactly(END - 1, END - 2, start);
+        assertThat(cursors).containsExactly(start);
+        assertThat(pageCounts).containsExactly(3);
     }
 
     @Test
@@ -161,6 +163,24 @@ class KlinePaginationTest {
         handler.execute(task(START, END, 1000), BackfillControls.running(11L));
 
         verify(client).getCandles(eq(KlineType.CANDLE), eq("BTC-USDT-SWAP"), eq("1H"), any(), isNull(), eq(300));
+    }
+
+    @Test
+    void commitsEveryFivePagesInOneTransaction() {
+        long start = END - 10 * HOUR;
+        stubPages(List.of(candle(END - HOUR)),
+                List.of(candle(END - 2 * HOUR)),
+                List.of(candle(END - 3 * HOUR)),
+                List.of(candle(END - 4 * HOUR)),
+                List.of(candle(END - 5 * HOUR)),
+                List.of(candle(END - 6 * HOUR)));
+
+        TaskOutcome outcome = handler.execute(task(start, END, null), BackfillControls.running(11L));
+
+        assertThat(outcome.rowsWritten()).isEqualTo(6L);
+        assertThat(cursors).containsExactly(END - 5 * HOUR, END - 6 * HOUR);
+        assertThat(pageCounts).containsExactly(5, 6);
+        verify(repository, times(6)).upsertAll(anyList());
     }
 
     @Test

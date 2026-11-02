@@ -16,7 +16,12 @@ import org.springframework.stereotype.Component;
 import javax.sql.DataSource;
 
 /**
- * 启动时按需执行 classpath:db/schema.sql（okx.db.auto-init=true），并校验 12 张表存在。
+ * 启动时的结构自检，顺序：
+ * <ol>
+ *   <li>okx.db.auto-init=true 时执行 classpath:db/schema.sql（幂等建表）</li>
+ *   <li>okx.db.migrate=true 时应用 classpath:db/migrations/*.sql（TimescaleDB 分块/压缩等增量改造）</li>
+ *   <li>校验 24 张表都存在，缺表直接启动失败</li>
+ * </ol>
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
@@ -27,16 +32,24 @@ public class SchemaInitializer implements ApplicationRunner {
     public static final List<String> REQUIRED_TABLES = List.of(
             "okx_instrument", "okx_coin", "okx_kline", "okx_funding_rate",
             "okx_long_short_ratio", "okx_open_interest_volume", "okx_taker_volume", "okx_open_interest",
-            "okx_backfill_job", "okx_backfill_task", "okx_sync_cursor", "okx_api_call_log");
+            "okx_backfill_job", "okx_backfill_task", "okx_sync_cursor", "okx_api_call_log",
+            "okx_schema_migration",
+            // 策略相关（阶段 C）
+            "okx_min_order", "okx_strategy", "okx_backtest_run", "okx_backtest_result", "okx_backtest_trade",
+            "okx_backtest_equity", "okx_shadow_order", "okx_shadow_position", "okx_health_check",
+            "okx_portfolio_snapshot", "okx_credential_vault");
 
     private final DataSource dataSource;
     private final JdbcTemplate jdbcTemplate;
     private final OkxProperties properties;
+    private final SchemaMigrationRunner migrationRunner;
 
-    public SchemaInitializer(DataSource dataSource, JdbcTemplate jdbcTemplate, OkxProperties properties) {
+    public SchemaInitializer(DataSource dataSource, JdbcTemplate jdbcTemplate, OkxProperties properties,
+            SchemaMigrationRunner migrationRunner) {
         this.dataSource = dataSource;
         this.jdbcTemplate = jdbcTemplate;
         this.properties = properties;
+        this.migrationRunner = migrationRunner;
     }
 
     @Override
@@ -46,6 +59,9 @@ public class SchemaInitializer implements ApplicationRunner {
             populator.setContinueOnError(false);
             populator.execute(dataSource);
             log.info("okx schema applied from classpath:db/schema.sql");
+        }
+        if (properties.db().migrate()) {
+            migrationRunner.run();
         }
         List<String> missing = REQUIRED_TABLES.stream()
                 .filter(table -> jdbcTemplate.queryForObject("SELECT to_regclass(?)", String.class, "public." + table) == null)

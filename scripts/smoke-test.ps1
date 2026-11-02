@@ -27,7 +27,8 @@ $checks = @(
     @{ Name = "actuator health";      Path = "/actuator/health";                          ExpectCode = $false },
     @{ Name = "sync status";          Path = "/api/v1/sync/status";                       ExpectCode = $true  },
     @{ Name = "coins (limit=5)";      Path = "/api/v1/coins?limit=5";                     ExpectCode = $true  },
-    @{ Name = "instruments (SWAP)";   Path = "/api/v1/instruments?instType=SWAP&limit=5"; ExpectCode = $true  }
+    @{ Name = "instruments (SWAP)";   Path = "/api/v1/instruments?instType=SWAP&limit=5"; ExpectCode = $true  },
+    @{ Name = "storage report";       Path = "/api/v1/maintenance/storage";               ExpectCode = $true  }
 )
 
 function Get-DataCount {

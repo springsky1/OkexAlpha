@@ -1,5 +1,8 @@
 server:
   port: 18080
+  # 默认只监听回环地址：本服务没有鉴权，且凭证保险库接口（POST /api/v1/credentials）会写入
+  # 加密后的 OKX 密钥，不该在局域网上裸奔。需要远程访问时用 OKX_BIND_ADDRESS=0.0.0.0 显式放开。
+  address: ${OKX_BIND_ADDRESS:127.0.0.1}
   shutdown: graceful
 
 spring:
@@ -8,10 +11,12 @@ spring:
   datasource:
     url: ${OKX_DB_URL:jdbc:postgresql://localhost:5432/okex_alpha}
     username: ${OKX_DB_USER:postgres}
-    password: ${OKX_DB_PASSWORD:123456}
+    password: ${OKX_DB_PASSWORD:}
     hikari:
       pool-name: okex-pool
-      maximum-pool-size: 10
+      # 一个 job 内最多 worker-threads 个 task 同时写库（每页一个短事务），
+      # 再留出 Web 查询/健康检查的连接，池子要大于并发度。
+      maximum-pool-size: 20
       minimum-idle: 2
       connection-timeout: 10000
   jackson:
@@ -43,11 +48,18 @@ okx:
     enabled: true
     # 每 2 秒配额。官方口径：行情类 20 次/2s、资金费率历史 10 次/2s、rubik 统计 5 次/2s；
     # 这里取 ~80%，留出余量与大盘行情共用额度。
+    # 端点组窗口按接口族分账，多个组可以同时满额；所有请求另外共享 global-per-2s 的 IP 级总窗口。
     instruments-per-2s: 16
     candles-per-2s: 16
-    funding-per-2s: 10
+    funding-per-2s: 8
     rubik-per-2s: 4
+    # 所有 REST 调用（含交易）共享的总配额，取官方单接口上限的 1.5 倍左右，
+    # 保证端点组满额时也不会把整站 IP 额度打穿。
+    global-per-2s: 30
   backfill:
+    # 单个 job 内并发执行的 task 数（也是 job 派发线程池大小）。
+    # task 之间区间互不重叠，并发只是在限速允许的空档里多压几个在途请求；
+    # 上游压力由 rate-limit 的端点组窗口 + 全局窗口控制，调大这里不会突破限额。
     worker-threads: 8
     queue-capacity: 64
     page-limit: 300
@@ -56,8 +68,61 @@ okx:
   sync:
     include-options: true
   schedule:
-    enabled: false
+    # 打开 Spring 调度：影子引擎（每 5s 一轮）与健康度检查（每 60s 一轮）依赖它。
+    # 关掉后两个定时任务不再自动跑，只能靠 POST /api/v1/strategy/shadow/tick 与
+    # POST /api/v1/strategy/health/check 手动触发。
+    enabled: true
   api-log:
     enabled: true
   db:
+    # 启动时执行 db/schema.sql（幂等建表）
     auto-init: true
+    # 启动时应用 db/migrations/*.sql（TimescaleDB 分块 + 压缩 + autovacuum 调参）
+    migrate: true
+    # 批量补拉写入时 SET LOCAL synchronous_commit = off：提交不再等 WAL fsync，
+    # 吞吐明显提升；断电最多丢最后几页，作业重跑幂等可安全重拉
+    relax-sync-commit: true
+    # 每 N 页数据 + 游标合并成一个事务提交（1 = 每页一事务）
+    commit-every-pages: 5
+  # 账户节点展示用：Key 备注名（不是机密；真实名称在 OKX 后台）
+  account:
+    key-label: ${OKX_KEY_LABEL:OkexAlpha}
+    # 凭证保险库主密钥：32 字节原始密钥的 base64（openssl rand -base64 32）。
+    # 只有把 Key 加密存进库（POST /api/v1/account/credentials）时才需要；
+    # 主密钥本身只走环境变量，不写数据库、不进 git。丢失 = 库内密文作废（重新录入即可）。
+    master-key: ${OKX_MASTER_KEY:}
+  strategy:
+    # 策略模块总开关（阶段 C）。false 时不注册影子引擎与健康度调度
+    enabled: true
+    shadow:
+      tick-interval-ms: 5000
+    health:
+      interval-ms: 60000
+      # 触发 FAIL 级规则时是否自动清空影子持仓（只影响影子账本，不发单）
+      auto-exit: true
+      min-utilization-pct: 20
+      max-utilization-pct: 60
+    backtest:
+      threads: 2
+      default-sample-size: 400
+      max-combos: 2000
+      # 与实测标定一致（candles 16/2s 下的干净吞吐），用于 data-plan 估算
+      pages-per-second: 6.3
+    trading:
+      # 默认关闭且 mode=SHADOW：只做影子记账，永不发真实订单
+      enabled: false
+      mode: SHADOW
+      # 凭证只从环境变量注入（本文件不落任何真实密钥，禁止把 Key/Secret/Passphrase 写在这里）
+      # 本地开发：把 export OKX_* 写进 .run/okx.env（已被 .gitignore 忽略），再 source 后启动
+      api-key: ${OKX_API_KEY:}
+      secret-key: ${OKX_SECRET_KEY:}
+      passphrase: ${OKX_PASSPHRASE:}
+      fee-taker: 0.0005
+      fee-maker: 0.0002
+      slippage-bps: 2
+      max-positions: 50
+      capital-per-coin-usd: 0
+      max-daily-notional-usd: 500
+      daily-batch:
+        enabled: false
+        cron: "0 30 8 * * *"

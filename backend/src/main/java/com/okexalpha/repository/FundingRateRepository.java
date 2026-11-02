@@ -13,6 +13,7 @@ import com.okexalpha.domain.FundingRateRow;
 @Repository
 public class FundingRateRepository {
 
+    /** 幂等写入 + 内容相同的行不 UPDATE（避免重复补拉造成的死元组膨胀）。 */
     private static final String UPSERT = """
             INSERT INTO okx_funding_rate (inst_id, funding_time_ms, inst_type, funding_rate, realized_rate,
                 method, formula_type, settled, premium, interest_rate, next_funding_time_ms, impact_value,
@@ -33,24 +34,35 @@ public class FundingRateRepository {
                 max_funding_rate = EXCLUDED.max_funding_rate,
                 ts_ms = EXCLUDED.ts_ms,
                 updated_at = now()
+            WHERE (okx_funding_rate.inst_type, okx_funding_rate.funding_rate, okx_funding_rate.realized_rate,
+                   okx_funding_rate.method, okx_funding_rate.formula_type, okx_funding_rate.settled,
+                   okx_funding_rate.premium, okx_funding_rate.interest_rate,
+                   okx_funding_rate.next_funding_time_ms, okx_funding_rate.impact_value,
+                   okx_funding_rate.min_funding_rate, okx_funding_rate.max_funding_rate, okx_funding_rate.ts_ms)
+                IS DISTINCT FROM
+                  (EXCLUDED.inst_type, EXCLUDED.funding_rate, EXCLUDED.realized_rate,
+                   EXCLUDED.method, EXCLUDED.formula_type, EXCLUDED.settled,
+                   EXCLUDED.premium, EXCLUDED.interest_rate,
+                   EXCLUDED.next_funding_time_ms, EXCLUDED.impact_value,
+                   EXCLUDED.min_funding_rate, EXCLUDED.max_funding_rate, EXCLUDED.ts_ms)
             """;
 
     private static final RowMapper<FundingRateRow> ROW_MAPPER = (ResultSet rs, int rowNum) -> new FundingRateRow(
             rs.getString("inst_id"),
             rs.getString("inst_type"),
             rs.getLong("funding_time_ms"),
-            rs.getBigDecimal("funding_rate"),
-            rs.getBigDecimal("realized_rate"),
+            rs.getObject("funding_rate", Double.class),
+            rs.getObject("realized_rate", Double.class),
             rs.getString("method"),
             rs.getString("formula_type"),
             rs.getBoolean("settled"),
-            rs.getBigDecimal("premium"),
-            rs.getBigDecimal("interest_rate"),
-            rs.getObject("next_funding_time_ms") == null ? null : rs.getLong("next_funding_time_ms"),
-            rs.getBigDecimal("impact_value"),
-            rs.getBigDecimal("min_funding_rate"),
-            rs.getBigDecimal("max_funding_rate"),
-            rs.getObject("ts_ms") == null ? null : rs.getLong("ts_ms"));
+            rs.getObject("premium", Double.class),
+            rs.getObject("interest_rate", Double.class),
+            rs.getObject("next_funding_time_ms", Long.class),
+            rs.getObject("impact_value", Double.class),
+            rs.getObject("min_funding_rate", Double.class),
+            rs.getObject("max_funding_rate", Double.class),
+            rs.getObject("ts_ms", Long.class));
 
     private final JdbcTemplate jdbcTemplate;
 
