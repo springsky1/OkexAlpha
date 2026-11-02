@@ -1,0 +1,1551 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OkexAlpha 数据后台</title>
+<link rel="stylesheet" href="styles.css?v=20261101a">
+</head>
+<body>
+<div class="app">
+  <!-- ============ 左侧导航 ============ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">OK</span>
+      <span class="brand-text">
+        <strong>OkexAlpha</strong>
+        <small>数据下载 / 补拉后台</small>
+      </span>
+    </div>
+    <div class="nav" id="nav">
+      <!-- 分组 1：基础数据（原有 8 个入口，hash 与文案不变） -->
+      <nav class="nav-group" data-group="basic" aria-label="基础数据">
+        <button class="nav-group-toggle" type="button" data-group-toggle="basic" aria-expanded="true" aria-controls="nav-items-basic">
+          <span class="nav-group-title">基础数据</span>
+          <span class="nav-group-arrow" aria-hidden="true">▾</span>
+        </button>
+        <div class="nav-items" id="nav-items-basic" data-group-items="basic">
+          <a class="nav-item" href="#/status" data-route="status">运行状态</a>
+          <a class="nav-item" href="#/klines" data-route="klines">K 线查询</a>
+          <a class="nav-item" href="#/funding" data-route="funding">资金费率</a>
+          <a class="nav-item" href="#/stats" data-route="stats">统计查询</a>
+          <a class="nav-item" href="#/backfill" data-route="backfill">补拉作业</a>
+          <a class="nav-item" href="#/jobs" data-route="jobs">作业列表</a>
+          <a class="nav-item" href="#/sync" data-route="sync">同步</a>
+          <a class="nav-item" href="#/data" data-route="data">数据浏览</a>
+        </div>
+      </nav>
+      <!-- 分组 2：策略（阶段 C 骨架，页面为占位） -->
+      <nav class="nav-group" data-group="strategy" aria-label="策略">
+        <button class="nav-group-toggle" type="button" data-group-toggle="strategy" aria-expanded="true" aria-controls="nav-items-strategy">
+          <span class="nav-group-title">策略</span>
+          <span class="nav-group-arrow" aria-hidden="true">▾</span>
+        </button>
+        <div class="nav-items" id="nav-items-strategy" data-group-items="strategy">
+          <a class="nav-item" href="#/strategy-backtest" data-route="strategy-backtest">策略回测</a>
+          <a class="nav-item" href="#/shadow" data-route="shadow">影子订单</a>
+          <a class="nav-item" href="#/health" data-route="health">健康度</a>
+          <a class="nav-item" href="#/live" data-route="live">实盘</a>
+        </div>
+      </nav>
+      <!-- 分组 3：账户（只读账户 / 订单 / 马丁策略） -->
+      <nav class="nav-group" data-group="account" aria-label="账户">
+        <button class="nav-group-toggle" type="button" data-group-toggle="account" aria-expanded="true" aria-controls="nav-items-account">
+          <span class="nav-group-title">账户</span>
+          <span class="nav-group-arrow" aria-hidden="true">▾</span>
+        </button>
+        <div class="nav-items" id="nav-items-account" data-group-items="account">
+          <a class="nav-item" href="#/account" data-route="account">账户概览</a>
+          <a class="nav-item" href="#/orders" data-route="orders">我的订单</a>
+          <a class="nav-item" href="#/strategies" data-route="strategies">马丁策略</a>
+        </div>
+      </nav>
+    </div>
+    <div class="sidebar-foot">
+      <div class="foot-label">服务地址</div>
+      <div class="mono" id="svc-origin">—</div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <!-- ============ 顶部固定栏 ============ -->
+    <header class="topbar">
+      <div class="topbar-group">
+        <button class="health-badge" type="button" id="health-badge" data-state="unknown" title="点击重新检查健康状态">
+          <span class="dot"></span><span id="health-text">检测中…</span>
+        </button>
+        <span class="topbar-meta mono" id="health-detail">—</span>
+      </div>
+      <div class="topbar-group">
+        <span class="topbar-meta">最后刷新：<span id="last-refresh">—</span></span>
+        <button class="btn btn-sm" type="button" id="btn-check-health">检查健康</button>
+      </div>
+    </header>
+
+    <main class="content" id="content">
+
+      <!-- ==================== 1. 运行状态 ==================== -->
+      <section class="page" data-page="status" hidden>
+        <div class="page-head">
+          <div>
+            <h1>运行状态</h1>
+            <p class="muted">健康检查与数据面概览（行数 / 品种分布 / 补拉作业 / 同步游标）。</p>
+          </div>
+          <div class="page-actions">
+            <label class="switch"><input type="checkbox" id="status-auto" checked><span>每 5 秒自动刷新</span></label>
+            <button class="btn btn-primary" type="button" id="status-refresh">立即刷新</button>
+          </div>
+        </div>
+
+        <div class="alert danger" id="status-error" hidden></div>
+
+        <div class="card-row" id="status-cards">
+          <div class="card stat-card">
+            <div class="stat-label">健康检查</div>
+            <div class="stat-value" id="status-health">—</div>
+            <div class="stat-sub mono" id="status-health-sub">—</div>
+          </div>
+          <div class="card stat-card">
+            <div class="stat-label">品种总数</div>
+            <div class="stat-value" id="status-inst-total">—</div>
+            <div class="stat-sub">okx_instrument</div>
+          </div>
+          <div class="card stat-card">
+            <div class="stat-label">币种总数</div>
+            <div class="stat-value" id="status-coin-total">—</div>
+            <div class="stat-sub">okx_coin</div>
+          </div>
+          <div class="card stat-card">
+            <div class="stat-label">K 线总行数</div>
+            <div class="stat-value" id="status-kline-total">—</div>
+            <div class="stat-sub">okx_kline</div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-head"><h2>各表行数</h2><span class="muted">GET /api/v1/sync/status</span></div>
+            <div id="status-rows"><div class="state">加载中…</div></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>品种分布</h2><span class="muted">instrumentsByType</span></div>
+            <div id="status-inst-types"><div class="state">加载中…</div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>补拉作业概览</h2><span class="muted">backfillJobs（按类型 + 状态聚合）</span></div>
+          <div id="status-jobs"><div class="state">加载中…</div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>同步游标</h2><span class="muted">okx_sync_cursor</span></div>
+          <div id="status-cursors"><div class="state">加载中…</div></div>
+        </div>
+      </section>
+
+      <!-- ==================== 2. K 线查询 ==================== -->
+      <section class="page" data-page="klines" hidden>
+        <div class="page-head">
+          <div>
+            <h1>K 线查询</h1>
+            <p class="muted">查询已入库的 K 线。CANDLE 带成交量，MARK 为标记价格；只支持永续合约（<code>-SWAP</code>），指数 K 线已下线。</p>
+          </div>
+        </div>
+
+        <form class="card" id="form-kline" novalidate>
+          <div class="form-grid">
+            <div class="field">
+              <label for="kline-inst-id">instId <span class="req">*</span></label>
+              <input id="kline-inst-id" type="text" value="BTC-USDT-SWAP" placeholder="点击或输入 coin 筛选，如 BTC" autocomplete="off" spellcheck="false">
+              <p class="hint">下拉可选，支持按 coin 或 instId 过滤；只支持永续合约 -SWAP</p>
+            </div>
+            <div class="field">
+              <label for="kline-bar">bar <span class="req">*</span></label>
+              <select id="kline-bar"></select>
+              <p class="hint">24 个周期（含 utc 变体）</p>
+            </div>
+            <div class="field">
+              <label for="kline-type">klineType</label>
+              <select id="kline-type">
+                <option value="CANDLE" selected>CANDLE（蜡烛）</option>
+                <option value="MARK">MARK（标记价格）</option>
+              </select>
+              <p class="hint">只有 CANDLE 带成交量</p>
+            </div>
+            <div class="field">
+              <label for="kline-start">开始时间</label>
+              <input id="kline-start" type="datetime-local" data-role="start">
+            </div>
+            <div class="field">
+              <label for="kline-end">结束时间</label>
+              <input id="kline-end" type="datetime-local" data-role="end">
+            </div>
+            <div class="field">
+              <label for="kline-limit">limit</label>
+              <input id="kline-limit" type="number" value="500" min="1" max="5000" step="1">
+              <p class="hint">默认 500，上限 5000</p>
+            </div>
+            <div class="field">
+              <label for="kline-order">order</label>
+              <select id="kline-order">
+                <option value="desc" selected>desc（新 → 旧）</option>
+                <option value="asc">asc（旧 → 新）</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-actions">
+            <div class="quick-group">
+              <span class="hint">快捷时间：</span>
+              <button class="chip" type="button" data-quick-days="1">近 1 天</button>
+              <button class="chip" type="button" data-quick-days="7">近 7 天</button>
+              <button class="chip" type="button" data-quick-days="30">近 30 天</button>
+              <button class="chip" type="button" data-quick-clear="1">清空时间</button>
+            </div>
+            <div class="btn-group">
+              <button class="btn" type="button" id="kline-reset">重置</button>
+              <button class="btn btn-primary" type="submit" id="kline-submit">查询</button>
+            </div>
+          </div>
+        </form>
+
+        <div class="alert danger" id="kline-error" hidden></div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>蜡烛图</h2>
+            <div class="legend">
+              <span class="legend-item"><i class="swatch up"></i>涨</span>
+              <span class="legend-item"><i class="swatch down"></i>跌</span>
+              <span class="legend-item muted" id="kline-chart-meta">—</span>
+            </div>
+          </div>
+          <div class="chart-toolbar">
+            <label class="chart-toggle"><input type="checkbox" id="chart-opt-close" checked><i class="line-swatch" data-key="close"></i>收盘价折线</label>
+            <label class="chart-toggle"><input type="checkbox" id="chart-opt-ma5"><i class="line-swatch" data-key="ma5"></i>MA5</label>
+            <label class="chart-toggle"><input type="checkbox" id="chart-opt-ma20"><i class="line-swatch" data-key="ma20"></i>MA20</label>
+            <label class="chart-toggle"><input type="checkbox" id="chart-opt-ma60"><i class="line-swatch" data-key="ma60"></i>MA60</label>
+            <span class="chart-sep"></span>
+            <label class="chart-toggle"><input type="checkbox" id="chart-opt-ratioPos"><i class="line-swatch" data-key="ratioPos"></i>精英持仓多空比</label>
+            <label class="chart-toggle"><input type="checkbox" id="chart-opt-ratioAcc"><i class="line-swatch" data-key="ratioAcc"></i>大户账户多空比</label>
+            <label class="chart-toggle"><input type="checkbox" id="chart-opt-ratioLsr"><i class="line-swatch" data-key="ratioLsr"></i>全账户多空比</label>
+            <span class="hint" id="kline-chart-hint">勾选后叠加折线；多空比走右侧独立刻度（5m/1H/1D 由 bar 推导）；图表按所选时间范围读取整段数据</span>
+          </div>
+          <div class="chart-wrap"><canvas id="kline-chart"></canvas></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>查询结果</h2><span class="muted" id="kline-summary">尚未查询</span></div>
+          <div id="kline-table-wrap"><div class="state">尚未查询</div></div>
+        </div>
+      </section>
+
+      <!-- ==================== 3. 资金费率 ==================== -->
+      <section class="page" data-page="funding" hidden>
+        <div class="page-head">
+          <div>
+            <h1>资金费率</h1>
+            <p class="muted">按 instId 与时间范围查询资金费率记录（衍生品才有资金费率）。</p>
+          </div>
+        </div>
+
+        <form class="card" id="form-funding" novalidate>
+          <div class="form-grid">
+            <div class="field">
+              <label for="funding-inst-id">instId <span class="req">*</span></label>
+              <input id="funding-inst-id" type="text" value="BTC-USDT-SWAP" placeholder="点击或输入 coin 筛选，如 BTC" autocomplete="off" spellcheck="false">
+              <p class="hint">下拉可选 SWAP + FUTURES，支持按 coin 过滤</p>
+            </div>
+            <div class="field">
+              <label for="funding-start">开始时间</label>
+              <input id="funding-start" type="datetime-local" data-role="start">
+            </div>
+            <div class="field">
+              <label for="funding-end">结束时间</label>
+              <input id="funding-end" type="datetime-local" data-role="end">
+            </div>
+            <div class="field">
+              <label for="funding-limit">limit</label>
+              <input id="funding-limit" type="number" value="500" min="1" max="1000" step="1">
+              <p class="hint">默认 500，上限 1000</p>
+            </div>
+            <div class="field">
+              <label for="funding-order">order</label>
+              <select id="funding-order">
+                <option value="desc" selected>desc（新 → 旧）</option>
+                <option value="asc">asc（旧 → 新）</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-actions">
+            <div class="quick-group">
+              <span class="hint">快捷时间：</span>
+              <button class="chip" type="button" data-quick-days="7">近 7 天</button>
+              <button class="chip" type="button" data-quick-days="30">近 30 天</button>
+              <button class="chip" type="button" data-quick-days="90">近 90 天</button>
+              <button class="chip" type="button" data-quick-clear="1">清空时间</button>
+            </div>
+            <div class="btn-group">
+              <button class="btn btn-primary" type="submit">查询</button>
+            </div>
+          </div>
+        </form>
+
+        <div class="alert danger" id="funding-error" hidden></div>
+
+        <div class="card">
+          <div class="card-head"><h2>查询结果</h2><span class="muted" id="funding-summary">尚未查询</span></div>
+          <div id="funding-table-wrap"><div class="state">尚未查询</div></div>
+        </div>
+      </section>
+
+      <!-- ==================== 4. 统计查询 ==================== -->
+      <section class="page" data-page="stats" hidden>
+        <div class="page-head">
+          <div>
+            <h1>统计查询</h1>
+            <p class="muted">rubik 统计与持仓量快照。period 只支持 5m / 1H / 1D（各有上游保留期）。</p>
+          </div>
+        </div>
+
+        <div class="tabs" id="stats-tabs" role="tablist">
+          <button class="tab is-active" type="button" data-tab="ratios" role="tab" aria-selected="true">多空比</button>
+          <button class="tab" type="button" data-tab="oiv" role="tab" aria-selected="false">持仓量-成交额</button>
+          <button class="tab" type="button" data-tab="taker" role="tab" aria-selected="false">主动买卖量</button>
+          <button class="tab" type="button" data-tab="oi" role="tab" aria-selected="false">持仓量快照</button>
+        </div>
+
+        <!-- 4.1 多空比 -->
+        <div class="tab-panel is-active" data-panel="ratios">
+          <form class="card" id="form-ratios" novalidate>
+            <div class="form-grid">
+              <div class="field">
+                <label for="ratio-type">ratioType <span class="req">*</span></label>
+                <select id="ratio-type"></select>
+                <p class="hint" id="ratio-type-hint">—</p>
+              </div>
+              <div class="field">
+                <label for="ratio-scope">scope <span class="req">*</span></label>
+                <input id="ratio-scope" type="text" value="BTC" placeholder="BTC 或 BTC-USDT-SWAP" autocomplete="off">
+                <p class="hint">CCY 类型填币种，INST 类型填 instId</p>
+              </div>
+              <div class="field">
+                <label for="ratio-period">period <span class="req">*</span></label>
+                <select id="ratio-period"></select>
+              </div>
+              <div class="field">
+                <label for="ratio-start">开始时间</label>
+                <input id="ratio-start" type="datetime-local" data-role="start">
+              </div>
+              <div class="field">
+                <label for="ratio-end">结束时间</label>
+                <input id="ratio-end" type="datetime-local" data-role="end">
+              </div>
+              <div class="field">
+                <label for="ratio-limit">limit</label>
+                <input id="ratio-limit" type="number" value="500" min="1" max="1000" step="1">
+              </div>
+              <div class="field">
+                <label for="ratio-order">order</label>
+                <select id="ratio-order">
+                  <option value="desc" selected>desc（新 → 旧）</option>
+                  <option value="asc">asc（旧 → 新）</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-actions">
+              <div class="quick-group">
+                <span class="hint">快捷时间：</span>
+                <button class="chip" type="button" data-quick-days="1">近 1 天</button>
+                <button class="chip" type="button" data-quick-days="7">近 7 天</button>
+                <button class="chip" type="button" data-quick-days="30">近 30 天</button>
+                <button class="chip" type="button" data-quick-clear="1">清空时间</button>
+              </div>
+              <div class="btn-group">
+                <button class="btn btn-primary" type="submit">查询</button>
+              </div>
+            </div>
+          </form>
+          <div class="alert danger" id="ratios-error" hidden></div>
+          <div class="card">
+            <div class="card-head"><h2>查询结果</h2><span class="muted" id="ratios-summary">尚未查询</span></div>
+            <div id="ratios-table-wrap"><div class="state">尚未查询</div></div>
+          </div>
+        </div>
+
+        <!-- 4.2 持仓量-成交额 -->
+        <div class="tab-panel" data-panel="oiv">
+          <form class="card" id="form-oiv" novalidate>
+            <div class="form-grid">
+              <div class="field">
+                <label for="oiv-ccy">ccy <span class="req">*</span></label>
+                <input id="oiv-ccy" type="text" value="BTC" placeholder="BTC" autocomplete="off">
+              </div>
+              <div class="field">
+                <label for="oiv-period">period <span class="req">*</span></label>
+                <select id="oiv-period"></select>
+              </div>
+              <div class="field">
+                <label for="oiv-start">开始时间</label>
+                <input id="oiv-start" type="datetime-local" data-role="start">
+              </div>
+              <div class="field">
+                <label for="oiv-end">结束时间</label>
+                <input id="oiv-end" type="datetime-local" data-role="end">
+              </div>
+              <div class="field">
+                <label for="oiv-limit">limit</label>
+                <input id="oiv-limit" type="number" value="500" min="1" max="1000" step="1">
+              </div>
+              <div class="field">
+                <label for="oiv-order">order</label>
+                <select id="oiv-order">
+                  <option value="desc" selected>desc（新 → 旧）</option>
+                  <option value="asc">asc（旧 → 新）</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-actions">
+              <div class="quick-group">
+                <span class="hint">快捷时间：</span>
+                <button class="chip" type="button" data-quick-days="1">近 1 天</button>
+                <button class="chip" type="button" data-quick-days="7">近 7 天</button>
+                <button class="chip" type="button" data-quick-clear="1">清空时间</button>
+              </div>
+              <div class="btn-group">
+                <button class="btn btn-primary" type="submit">查询</button>
+              </div>
+            </div>
+          </form>
+          <div class="alert danger" id="oiv-error" hidden></div>
+          <div class="card">
+            <div class="card-head"><h2>查询结果</h2><span class="muted" id="oiv-summary">尚未查询</span></div>
+            <div id="oiv-table-wrap"><div class="state">尚未查询</div></div>
+          </div>
+        </div>
+
+        <!-- 4.3 主动买卖量 -->
+        <div class="tab-panel" data-panel="taker">
+          <form class="card" id="form-taker" novalidate>
+            <div class="form-grid">
+              <div class="field">
+                <label for="taker-scope-kind">scopeKind</label>
+                <select id="taker-scope-kind">
+                  <option value="CCY" selected>CCY（按币种）</option>
+                  <option value="INST">INST（按合约）</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="taker-scope">scope <span class="req">*</span></label>
+                <input id="taker-scope" type="text" value="BTC" placeholder="BTC 或 BTC-USDT-SWAP" autocomplete="off">
+                <p class="hint">CCY 填币种，INST 填 instId</p>
+              </div>
+              <div class="field">
+                <label for="taker-period">period <span class="req">*</span></label>
+                <select id="taker-period"></select>
+              </div>
+              <div class="field">
+                <label for="taker-start">开始时间</label>
+                <input id="taker-start" type="datetime-local" data-role="start">
+              </div>
+              <div class="field">
+                <label for="taker-end">结束时间</label>
+                <input id="taker-end" type="datetime-local" data-role="end">
+              </div>
+              <div class="field">
+                <label for="taker-limit">limit</label>
+                <input id="taker-limit" type="number" value="500" min="1" max="1000" step="1">
+              </div>
+              <div class="field">
+                <label for="taker-order">order</label>
+                <select id="taker-order">
+                  <option value="desc" selected>desc（新 → 旧）</option>
+                  <option value="asc">asc（旧 → 新）</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-actions">
+              <div class="quick-group">
+                <span class="hint">快捷时间：</span>
+                <button class="chip" type="button" data-quick-days="1">近 1 天</button>
+                <button class="chip" type="button" data-quick-days="7">近 7 天</button>
+                <button class="chip" type="button" data-quick-clear="1">清空时间</button>
+              </div>
+              <div class="btn-group">
+                <button class="btn btn-primary" type="submit">查询</button>
+              </div>
+            </div>
+          </form>
+          <div class="alert danger" id="taker-error" hidden></div>
+          <div class="card">
+            <div class="card-head"><h2>查询结果</h2><span class="muted" id="taker-summary">尚未查询</span></div>
+            <div id="taker-table-wrap"><div class="state">尚未查询</div></div>
+          </div>
+        </div>
+
+        <!-- 4.4 持仓量快照 -->
+        <div class="tab-panel" data-panel="oi">
+          <form class="card" id="form-oi" novalidate>
+            <div class="form-grid">
+              <div class="field">
+                <label for="oi-inst-id">instId <span class="req">*</span></label>
+                <input id="oi-inst-id" type="text" value="BTC-USDT-SWAP" placeholder="点击或输入 coin 筛选，如 BTC" autocomplete="off" spellcheck="false">
+                <p class="hint">下拉可选 SWAP + FUTURES；持仓量快照按采集时间记录，无历史回填</p>
+              </div>
+              <div class="field">
+                <label for="oi-start">开始时间</label>
+                <input id="oi-start" type="datetime-local" data-role="start">
+              </div>
+              <div class="field">
+                <label for="oi-end">结束时间</label>
+                <input id="oi-end" type="datetime-local" data-role="end">
+              </div>
+              <div class="field">
+                <label for="oi-limit">limit</label>
+                <input id="oi-limit" type="number" value="500" min="1" max="1000" step="1">
+              </div>
+              <div class="field">
+                <label for="oi-order">order</label>
+                <select id="oi-order">
+                  <option value="desc" selected>desc（新 → 旧）</option>
+                  <option value="asc">asc（旧 → 新）</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-actions">
+              <div class="quick-group">
+                <span class="hint">快捷时间：</span>
+                <button class="chip" type="button" data-quick-days="1">近 1 天</button>
+                <button class="chip" type="button" data-quick-days="7">近 7 天</button>
+                <button class="chip" type="button" data-quick-clear="1">清空时间</button>
+              </div>
+              <div class="btn-group">
+                <button class="btn btn-primary" type="submit">查询</button>
+              </div>
+            </div>
+          </form>
+          <div class="alert danger" id="oi-error" hidden></div>
+          <div class="card">
+            <div class="card-head"><h2>查询结果</h2><span class="muted" id="oi-summary">尚未查询</span></div>
+            <div id="oi-table-wrap"><div class="state">尚未查询</div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== 5. 补拉作业 ==================== -->
+      <section class="page" data-page="backfill" hidden>
+        <div class="page-head">
+          <div>
+            <h1>补拉（Backfill）</h1>
+            <p class="muted">提交补拉作业后立即返回 <code>{jobId, taskTotal}</code>（HTTP 202），作业由后端异步执行；可在「作业列表」里查看进度。</p>
+          </div>
+        </div>
+
+        <!-- 5.1 K 线 -->
+        <form class="card" id="form-bf-klines" novalidate>
+          <div class="card-head"><h2>K 线补拉</h2><span class="muted">POST /api/v1/backfill/klines</span></div>
+          <div class="mode-switch">
+            <label class="radio"><input type="radio" name="bf-kline-mode" value="ids" checked><span>按 instIds</span></label>
+            <label class="radio"><input type="radio" name="bf-kline-mode" value="type"><span>按 instType 展开</span></label>
+          </div>
+          <div class="form-grid">
+            <div class="field mode-block" data-mode-of="bf-kline-mode" data-mode-value="ids">
+              <label for="bf-kline-inst-ids">instIds</label>
+              <textarea id="bf-kline-inst-ids" rows="2" placeholder="BTC-USDT-SWAP, ETH-USDT-SWAP">BTC-USDT-SWAP</textarea>
+              <p class="hint">逗号 / 空格 / 换行分隔</p>
+            </div>
+            <div class="field mode-block" data-mode-of="bf-kline-mode" data-mode-value="type">
+              <label for="bf-kline-inst-type">instType</label>
+              <select id="bf-kline-inst-type"></select>
+              <p class="hint">K 线只支持 SWAP（永续）</p>
+            </div>
+            <div class="field mode-block" data-mode-of="bf-kline-mode" data-mode-value="type">
+              <label for="bf-kline-base-ccy">baseCcy</label>
+              <input id="bf-kline-base-ccy" type="text" placeholder="可留空，如 BTC" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="bf-kline-start">startMs（开始时间）</label>
+              <input id="bf-kline-start" type="datetime-local" data-role="start">
+            </div>
+            <div class="field">
+              <label for="bf-kline-end">endMs（结束时间）</label>
+              <input id="bf-kline-end" type="datetime-local" data-role="end">
+            </div>
+            <div class="field">
+              <label for="bf-kline-page-limit">pageLimit</label>
+              <input id="bf-kline-page-limit" type="number" min="1" max="300" step="1" placeholder="300（默认）">
+              <p class="hint">每页条数，≤ 300</p>
+            </div>
+          </div>
+          <div class="check-group">
+            <span class="check-group-title">bars <span class="req">*</span></span>
+            <div class="check-grid" data-group="bf-bars" id="bf-kline-bars"></div>
+          </div>
+          <div class="check-group">
+            <span class="check-group-title">klineTypes <span class="req">*</span></span>
+            <div class="check-grid" data-group="bf-kline-types">
+              <label class="check"><input type="checkbox" value="CANDLE" checked><span>CANDLE</span></label>
+              <label class="check"><input type="checkbox" value="MARK"><span>MARK</span></label>
+            </div>
+          </div>
+          <div class="form-actions">
+            <div class="quick-group">
+              <span class="hint">快捷时间：</span>
+              <button class="chip" type="button" data-quick-days="1">近 1 天</button>
+              <button class="chip" type="button" data-quick-days="7">近 7 天</button>
+              <button class="chip" type="button" data-quick-days="30">近 30 天</button>
+              <button class="chip" type="button" data-quick-clear="1">清空时间</button>
+            </div>
+            <div class="btn-group">
+              <button class="btn btn-primary" type="submit">提交补拉</button>
+            </div>
+          </div>
+          <div class="result-slot" id="bf-klines-result"></div>
+        </form>
+
+        <!-- 5.2 资金费率 -->
+        <form class="card" id="form-bf-funding" novalidate>
+          <div class="card-head"><h2>资金费率补拉</h2><span class="muted">POST /api/v1/backfill/funding-rates</span></div>
+          <div class="mode-switch">
+            <label class="radio"><input type="radio" name="bf-funding-mode" value="ids" checked><span>按 instIds</span></label>
+            <label class="radio"><input type="radio" name="bf-funding-mode" value="type"><span>按 instType 展开</span></label>
+          </div>
+          <div class="form-grid">
+            <div class="field mode-block" data-mode-of="bf-funding-mode" data-mode-value="ids">
+              <label for="bf-funding-inst-ids">instIds</label>
+              <textarea id="bf-funding-inst-ids" rows="2" placeholder="BTC-USDT-SWAP, ETH-USDT-SWAP">BTC-USDT-SWAP</textarea>
+              <p class="hint">逗号 / 空格 / 换行分隔</p>
+            </div>
+            <div class="field mode-block" data-mode-of="bf-funding-mode" data-mode-value="type">
+              <label for="bf-funding-inst-type">instType</label>
+              <select id="bf-funding-inst-type"></select>
+            </div>
+            <div class="field">
+              <label for="bf-funding-start">startMs（开始时间）</label>
+              <input id="bf-funding-start" type="datetime-local" data-role="start">
+            </div>
+            <div class="field">
+              <label for="bf-funding-end">endMs（结束时间）</label>
+              <input id="bf-funding-end" type="datetime-local" data-role="end">
+            </div>
+          </div>
+          <div class="form-actions">
+            <div class="quick-group">
+              <span class="hint">快捷时间：</span>
+              <button class="chip" type="button" data-quick-days="7">近 7 天</button>
+              <button class="chip" type="button" data-quick-days="30">近 30 天</button>
+              <button class="chip" type="button" data-quick-days="90">近 90 天</button>
+              <button class="chip" type="button" data-quick-clear="1">清空时间</button>
+            </div>
+            <div class="btn-group">
+              <button class="btn btn-primary" type="submit">提交补拉</button>
+            </div>
+          </div>
+          <div class="result-slot" id="bf-funding-result"></div>
+        </form>
+
+        <!-- 5.3 多空比 -->
+        <form class="card" id="form-bf-ratios" novalidate>
+          <div class="card-head"><h2>多空比补拉</h2><span class="muted">POST /api/v1/backfill/ratios</span></div>
+          <div class="check-group">
+            <span class="check-group-title">ratioTypes <span class="req">*</span></span>
+            <div class="check-grid" data-group="bf-ratio-types">
+              <label class="check"><input type="checkbox" value="LSR_ACCOUNT_CCY" checked><span>LSR_ACCOUNT_CCY</span></label>
+              <label class="check"><input type="checkbox" value="LSR_ACCOUNT_CONTRACT"><span>LSR_ACCOUNT_CONTRACT</span></label>
+              <label class="check"><input type="checkbox" value="TOP_TRADER_ACCOUNT"><span>TOP_TRADER_ACCOUNT</span></label>
+              <label class="check"><input type="checkbox" value="TOP_TRADER_POSITION"><span>TOP_TRADER_POSITION</span></label>
+            </div>
+            <p class="hint">CCY 类型用 ccys，INST 类型用 scopes；两类都要填才能同时覆盖。</p>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label for="bf-ratio-ccys">ccys</label>
+              <textarea id="bf-ratio-ccys" rows="2" placeholder="BTC, ETH">BTC</textarea>
+              <p class="hint">CCY 类型必填</p>
+            </div>
+            <div class="field">
+              <label for="bf-ratio-scopes">scopes</label>
+              <textarea id="bf-ratio-scopes" rows="2" placeholder="BTC-USDT-SWAP">BTC-USDT-SWAP</textarea>
+              <p class="hint">INST 类型必填（instId）</p>
+            </div>
+            <div class="field">
+              <label for="bf-ratio-start">startMs（开始时间）</label>
+              <input id="bf-ratio-start" type="datetime-local" data-role="start">
+            </div>
+            <div class="field">
+              <label for="bf-ratio-end">endMs（结束时间）</label>
+              <input id="bf-ratio-end" type="datetime-local" data-role="end">
+            </div>
+          </div>
+          <div class="check-group">
+            <span class="check-group-title">periods <span class="req">*</span></span>
+            <div class="check-grid" data-group="bf-ratio-periods">
+              <label class="check"><input type="checkbox" value="5m"><span>5m</span></label>
+              <label class="check"><input type="checkbox" value="1H" checked><span>1H</span></label>
+              <label class="check"><input type="checkbox" value="1D"><span>1D</span></label>
+            </div>
+          </div>
+          <div class="form-actions">
+            <div class="quick-group">
+              <span class="hint">快捷时间：</span>
+              <button class="chip" type="button" data-quick-days="1">近 1 天</button>
+              <button class="chip" type="button" data-quick-days="7">近 7 天</button>
+              <button class="chip" type="button" data-quick-days="30">近 30 天</button>
+              <button class="chip" type="button" data-quick-clear="1">清空时间</button>
+            </div>
+            <div class="btn-group">
+              <button class="btn btn-primary" type="submit">提交补拉</button>
+            </div>
+          </div>
+          <div class="result-slot" id="bf-ratios-result"></div>
+        </form>
+
+        <!-- 5.4 市场统计 -->
+        <form class="card" id="form-bf-stats" novalidate>
+          <div class="card-head"><h2>持仓量 / 成交额 / 主动买卖补拉</h2><span class="muted">POST /api/v1/backfill/market-stats</span></div>
+          <div class="check-group">
+            <span class="check-group-title">kinds</span>
+            <div class="check-grid" data-group="bf-kinds">
+              <label class="check"><input type="checkbox" value="OPEN_INTEREST_VOLUME" checked><span>OPEN_INTEREST_VOLUME（持仓量-成交额）</span></label>
+              <label class="check"><input type="checkbox" value="TAKER_VOLUME"><span>TAKER_VOLUME（主动买卖量）</span></label>
+              <label class="check"><input type="checkbox" value="OPEN_INTEREST"><span>OPEN_INTEREST（持仓量快照）</span></label>
+            </div>
+            <p class="hint">留空 = 三种全跑。OPEN_INTEREST_VOLUME 需要 ccys；TAKER_VOLUME 的 INST 维度用 instIds；OPEN_INTEREST 留空 instIds 时取库内全部 SWAP。</p>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label for="bf-stats-ccys">ccys</label>
+              <textarea id="bf-stats-ccys" rows="2" placeholder="BTC, ETH">BTC</textarea>
+            </div>
+            <div class="field">
+              <label for="bf-stats-inst-ids">instIds</label>
+              <textarea id="bf-stats-inst-ids" rows="2" placeholder="BTC-USDT-SWAP">BTC-USDT-SWAP</textarea>
+            </div>
+            <div class="field">
+              <label for="bf-stats-start">startMs（开始时间）</label>
+              <input id="bf-stats-start" type="datetime-local" data-role="start">
+            </div>
+            <div class="field">
+              <label for="bf-stats-end">endMs（结束时间）</label>
+              <input id="bf-stats-end" type="datetime-local" data-role="end">
+            </div>
+          </div>
+          <div class="check-group">
+            <span class="check-group-title">periods</span>
+            <div class="check-grid" data-group="bf-stats-periods">
+              <label class="check"><input type="checkbox" value="5m"><span>5m</span></label>
+              <label class="check"><input type="checkbox" value="1H" checked><span>1H</span></label>
+              <label class="check"><input type="checkbox" value="1D"><span>1D</span></label>
+            </div>
+          </div>
+          <div class="form-actions">
+            <div class="quick-group">
+              <span class="hint">快捷时间：</span>
+              <button class="chip" type="button" data-quick-days="1">近 1 天</button>
+              <button class="chip" type="button" data-quick-days="7">近 7 天</button>
+              <button class="chip" type="button" data-quick-clear="1">清空时间</button>
+            </div>
+            <div class="btn-group">
+              <button class="btn btn-primary" type="submit">提交补拉</button>
+            </div>
+          </div>
+          <div class="result-slot" id="bf-stats-result"></div>
+        </form>
+      </section>
+
+      <!-- ==================== 6. 作业列表 ==================== -->
+      <section class="page" data-page="jobs" hidden>
+        <div class="page-head">
+          <div>
+            <h1>作业列表</h1>
+            <p class="muted">GET /api/v1/backfill/jobs（按 jobId 倒序）。展开行可查看子任务，支持暂停 / 恢复 / 取消。</p>
+          </div>
+          <div class="page-actions">
+            <label class="switch"><input type="checkbox" id="jobs-auto" checked><span>每 5 秒自动刷新</span></label>
+            <button class="btn btn-primary" type="button" id="jobs-refresh">刷新</button>
+          </div>
+        </div>
+
+        <form class="card" id="form-jobs-filters" novalidate>
+          <div class="form-grid form-grid-tight">
+            <div class="field">
+              <label for="jobs-datatype">dataType</label>
+              <select id="jobs-datatype"><option value="">全部</option></select>
+            </div>
+            <div class="field">
+              <label for="jobs-status">status</label>
+              <select id="jobs-status"><option value="">全部</option></select>
+            </div>
+            <div class="field">
+              <label for="jobs-limit">每页条数</label>
+              <select id="jobs-limit">
+                <option value="20">20</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-actions">
+            <div class="quick-group"></div>
+            <div class="btn-group">
+              <button class="btn btn-primary" type="submit">查询</button>
+            </div>
+          </div>
+        </form>
+
+        <div class="alert danger" id="jobs-error" hidden></div>
+
+        <div class="card">
+          <div class="card-head"><h2>作业</h2><span class="muted" id="jobs-summary">尚未查询</span></div>
+          <div id="jobs-table-wrap"><div class="state">加载中…</div></div>
+          <div class="pager">
+            <button class="btn btn-sm" type="button" id="jobs-prev">上一页</button>
+            <span class="pager-info" id="jobs-page-info">—</span>
+            <button class="btn btn-sm" type="button" id="jobs-next">下一页</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== 7. 同步 ==================== -->
+      <section class="page" data-page="sync" hidden>
+        <div class="page-head">
+          <div>
+            <h1>同步</h1>
+            <p class="muted">从 OKX 上游拉取品种并重建币种表，或执行组合同步（品种 + 首批补拉作业）。均为同步阻塞调用，可能需要数分钟。</p>
+          </div>
+        </div>
+
+        <form class="card" id="form-sync-instruments" novalidate>
+          <div class="card-head"><h2>同步品种</h2><span class="muted">POST /api/v1/sync/instruments</span></div>
+          <div class="check-group">
+            <span class="check-group-title">instTypes</span>
+            <div class="check-grid" data-group="sync-inst-types">
+              <label class="check"><input type="checkbox" value="SPOT" checked><span>SPOT</span></label>
+              <label class="check"><input type="checkbox" value="MARGIN" checked><span>MARGIN</span></label>
+              <label class="check"><input type="checkbox" value="SWAP" checked><span>SWAP</span></label>
+              <label class="check"><input type="checkbox" value="FUTURES" checked><span>FUTURES</span></label>
+              <label class="check"><input type="checkbox" value="OPTION" checked><span>OPTION</span></label>
+            </div>
+            <p class="hint">全不选 = 后端默认同步全部 5 类。</p>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label class="check inline"><input type="checkbox" id="sync-include-options" checked><span>includeOptions（展开期权）</span></label>
+              <p class="hint">期权按家族逐个拉取，耗时最久</p>
+            </div>
+            <div class="field">
+              <label for="sync-families">families（可选）</label>
+              <input id="sync-families" type="text" placeholder="BTC-USD, ETH-USD" autocomplete="off">
+              <p class="hint">逗号分隔；留空则自动推断</p>
+            </div>
+          </div>
+          <div class="form-actions">
+            <div class="quick-group"><span class="hint danger-text">提交前会二次确认：全量同步可能跑几分钟。</span></div>
+            <div class="btn-group">
+              <button class="btn btn-primary" type="submit" id="sync-instruments-submit">开始同步</button>
+            </div>
+          </div>
+          <div class="result-slot" id="sync-instruments-result"></div>
+        </form>
+
+        <form class="card" id="form-sync-basic" novalidate>
+          <div class="card-head"><h2>组合同步（basic）</h2><span class="muted">POST /api/v1/sync/basic</span></div>
+          <div class="check-group">
+            <span class="check-group-title">instTypes（透传给品种同步）</span>
+            <div class="check-grid" data-group="sync-basic-inst-types">
+              <label class="check"><input type="checkbox" value="SPOT"><span>SPOT</span></label>
+              <label class="check"><input type="checkbox" value="MARGIN"><span>MARGIN</span></label>
+              <label class="check"><input type="checkbox" value="SWAP" checked><span>SWAP</span></label>
+              <label class="check"><input type="checkbox" value="FUTURES"><span>FUTURES</span></label>
+              <label class="check"><input type="checkbox" value="OPTION"><span>OPTION</span></label>
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label class="check inline"><input type="checkbox" id="sync-basic-include-options"><span>includeOptions</span></label>
+            </div>
+            <div class="field">
+              <label for="sync-basic-families">families</label>
+              <input id="sync-basic-families" type="text" placeholder="BTC-USD" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="sync-basic-inst-type">instType（补拉标的类型）</label>
+              <select id="sync-basic-inst-type"></select>
+            </div>
+            <div class="field">
+              <label for="sync-basic-max-instruments">maxInstruments</label>
+              <input id="sync-basic-max-instruments" type="number" value="20" min="1" max="500" step="1">
+              <p class="hint">夹到 [1, 500]</p>
+            </div>
+            <div class="field">
+              <label for="sync-basic-max-ccys">maxCcys</label>
+              <input id="sync-basic-max-ccys" type="number" value="10" min="1" max="100" step="1">
+              <p class="hint">夹到 [1, 100]</p>
+            </div>
+            <div class="field">
+              <label for="sync-basic-days">days</label>
+              <input id="sync-basic-days" type="number" value="7" min="1" max="365" step="1">
+              <p class="hint">补拉区间 [now-days, now]</p>
+            </div>
+            <div class="field">
+              <label for="sync-basic-bars">bars</label>
+              <input id="sync-basic-bars" type="text" value="1H" placeholder="1H, 1D" autocomplete="off">
+              <p class="hint">逗号分隔；留空 = 1H</p>
+            </div>
+            <div class="field">
+              <label class="check inline"><input type="checkbox" id="sync-basic-include-funding" checked><span>includeFunding</span></label>
+            </div>
+            <div class="field">
+              <label class="check inline"><input type="checkbox" id="sync-basic-include-ratios" checked><span>includeRatios</span></label>
+            </div>
+          </div>
+          <div class="check-group">
+            <span class="check-group-title">klineTypes</span>
+            <div class="check-grid" data-group="sync-basic-kline-types">
+              <label class="check"><input type="checkbox" value="CANDLE" checked><span>CANDLE</span></label>
+              <label class="check"><input type="checkbox" value="MARK"><span>MARK</span></label>
+            </div>
+          </div>
+          <div class="check-group">
+            <span class="check-group-title">ratioTypes</span>
+            <div class="check-grid" data-group="sync-basic-ratio-types">
+              <label class="check"><input type="checkbox" value="LSR_ACCOUNT_CCY" checked><span>LSR_ACCOUNT_CCY</span></label>
+              <label class="check"><input type="checkbox" value="LSR_ACCOUNT_CONTRACT"><span>LSR_ACCOUNT_CONTRACT</span></label>
+              <label class="check"><input type="checkbox" value="TOP_TRADER_ACCOUNT"><span>TOP_TRADER_ACCOUNT</span></label>
+              <label class="check"><input type="checkbox" value="TOP_TRADER_POSITION" checked><span>TOP_TRADER_POSITION</span></label>
+            </div>
+          </div>
+          <div class="form-actions">
+            <div class="quick-group"><span class="hint danger-text">提交前会二次确认：会先同步品种，再新建补拉作业。</span></div>
+            <div class="btn-group">
+              <button class="btn btn-primary" type="submit" id="sync-basic-submit">开始组合同步</button>
+            </div>
+          </div>
+          <div class="result-slot" id="sync-basic-result"></div>
+        </form>
+      </section>
+
+      <!-- ==================== 8. 数据浏览 ==================== -->
+      <section class="page" data-page="data" hidden>
+        <div class="page-head">
+          <div>
+            <h1>数据浏览</h1>
+            <p class="muted">币种表与品种表分页浏览（后端不返回总条数，按「本页是否满页」判断是否还有下一页）。</p>
+          </div>
+        </div>
+
+        <form class="card" id="form-coins" novalidate>
+          <div class="card-head"><h2>币种 coins</h2><span class="muted">GET /api/v1/coins</span></div>
+          <div class="form-grid form-grid-tight">
+            <div class="field">
+              <label for="coins-channel">channel</label>
+              <select id="coins-channel">
+                <option value="">全部</option>
+                <option value="SPOT">SPOT</option>
+                <option value="MARGIN">MARGIN</option>
+                <option value="SWAP">SWAP</option>
+                <option value="FUTURES">FUTURES</option>
+                <option value="OPTION">OPTION</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="coins-q">q（币种模糊匹配）</label>
+              <input id="coins-q" type="text" placeholder="BTC" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="coins-limit">每页条数</label>
+              <select id="coins-limit">
+                <option value="20">20</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-actions">
+            <div class="quick-group"></div>
+            <div class="btn-group"><button class="btn btn-primary" type="submit">查询</button></div>
+          </div>
+        </form>
+
+        <div class="alert danger" id="coins-error" hidden></div>
+
+        <div class="card">
+          <div class="card-head"><h2>币种列表</h2><span class="muted" id="coins-summary">尚未查询</span></div>
+          <div id="coins-table-wrap"><div class="state">尚未查询</div></div>
+          <div class="pager">
+            <button class="btn btn-sm" type="button" id="coins-prev">上一页</button>
+            <span class="pager-info" id="coins-page-info">—</span>
+            <button class="btn btn-sm" type="button" id="coins-next">下一页</button>
+          </div>
+        </div>
+
+        <form class="card" id="form-instruments" novalidate>
+          <div class="card-head"><h2>品种 instruments</h2><span class="muted">GET /api/v1/instruments</span></div>
+          <div class="form-grid form-grid-tight">
+            <div class="field">
+              <label for="inst-type">instType</label>
+              <select id="inst-type"><option value="">全部</option></select>
+            </div>
+            <div class="field">
+              <label for="inst-base">baseCcy</label>
+              <input id="inst-base" type="text" placeholder="BTC" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="inst-state">state</label>
+              <select id="inst-state">
+                <option value="">全部</option>
+                <option value="live">live</option>
+                <option value="suspend">suspend</option>
+                <option value="expired">expired</option>
+                <option value="preopen">preopen</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="inst-limit">每页条数</label>
+              <select id="inst-limit">
+                <option value="20">20</option>
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-actions">
+            <div class="quick-group"></div>
+            <div class="btn-group"><button class="btn btn-primary" type="submit">查询</button></div>
+          </div>
+        </form>
+
+        <div class="alert danger" id="inst-error" hidden></div>
+
+        <div class="card">
+          <div class="card-head"><h2>品种列表</h2><span class="muted" id="inst-summary">尚未查询</span></div>
+          <div id="inst-table-wrap"><div class="state">尚未查询</div></div>
+          <div class="pager">
+            <button class="btn btn-sm" type="button" id="inst-prev">上一页</button>
+            <span class="pager-info" id="inst-page-info">—</span>
+            <button class="btn btn-sm" type="button" id="inst-next">下一页</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== 9. 策略回测（/api/v1/strategy/backtests） ==================== -->
+      <section class="page" data-page="strategy-backtest" hidden>
+        <div class="page-head">
+          <div>
+            <h1>策略回测</h1>
+            <p class="muted">按币种、区间与参数网格跑马丁策略回测（粗筛抽样 + 精调 TopN），结果只落库做分析、不下单。同一时刻只允许一个批次在跑。</p>
+          </div>
+          <div class="page-actions">
+            <span class="hint" id="bt-list-summary">加载中…</span>
+            <button class="btn btn-sm" type="button" id="bt-refresh">刷新列表</button>
+          </div>
+        </div>
+
+        <form class="card" id="form-backtest" novalidate>
+          <div class="card-head">
+            <h2>创建回测批次</h2>
+            <span class="muted">POST /api/v1/strategy/backtests（202）</span>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label for="bt-inst-ids">币种 instIds</label>
+              <textarea id="bt-inst-ids" rows="2" placeholder="BTC-USDT-SWAP, ETH-USDT-SWAP"></textarea>
+              <p class="hint">逗号 / 空格 / 换行分隔；留空 = 库内前 N 个 live SWAP</p>
+            </div>
+            <div class="field">
+              <label for="bt-bar">bar</label>
+              <select id="bt-bar"></select>
+              <p class="hint">默认 1m；跑长区间建议 1H / 1D</p>
+            </div>
+            <div class="field">
+              <label for="bt-start">开始时间</label>
+              <input id="bt-start" type="datetime-local" data-role="start">
+            </div>
+            <div class="field">
+              <label for="bt-end">结束时间</label>
+              <input id="bt-end" type="datetime-local" data-role="end">
+            </div>
+            <div class="field">
+              <label for="bt-combos">combos 抽样组合数</label>
+              <input id="bt-combos" type="number" value="400" min="1" max="2000" step="1">
+              <p class="hint">默认 400，上限 2000</p>
+            </div>
+            <div class="field">
+              <label for="bt-topn">topN 精调保留数</label>
+              <input id="bt-topn" type="number" value="5" min="1" max="20" step="1">
+              <p class="hint">默认 5，上限 20</p>
+            </div>
+            <div class="field">
+              <label for="bt-margin">marginUsd 单币保证金</label>
+              <input id="bt-margin" type="number" value="100" min="1" step="1">
+              <p class="hint">默认 100（缺省取配置 capital-per-coin）</p>
+            </div>
+            <div class="field">
+              <label for="bt-maxhold">maxHoldHours 最长持仓</label>
+              <input id="bt-maxhold" type="number" value="48" min="1" max="8760" step="1">
+              <p class="hint">默认 48 小时</p>
+            </div>
+            <div class="field">
+              <label for="bt-coinlimit">coinLimit</label>
+              <input id="bt-coinlimit" type="number" value="12" min="1" max="50" step="1">
+              <p class="hint">instIds 留空时取前 N 个 live SWAP，上限 50</p>
+            </div>
+          </div>
+          <div class="form-actions">
+            <div class="quick-group">
+              <span class="hint">快捷区间：</span>
+              <button class="chip" type="button" data-quick-days="7">近 7 天</button>
+              <button class="chip" type="button" data-quick-days="30">近 30 天</button>
+              <button class="chip" type="button" data-quick-days="90">近 90 天</button>
+              <button class="chip" type="button" data-quick-clear="1">清空时间</button>
+            </div>
+            <div class="btn-group">
+              <button class="btn" type="button" id="bt-sample">小样本预设</button>
+              <button class="btn btn-primary" type="submit" id="bt-submit">创建回测</button>
+            </div>
+          </div>
+          <p class="hint" style="margin-top:8px">窗口最短 7 天；起止时间留空 = 结束于 now、开始于 now-90 天。已有 PENDING/RUNNING 批次时提交返回 409。</p>
+        </form>
+
+        <div class="alert danger" id="bt-error" hidden></div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>批次列表</h2>
+            <span class="muted">GET /api/v1/strategy/backtests?limit=20 · 有批次在跑时每 2 秒刷新</span>
+          </div>
+          <div id="bt-list-wrap"><div class="state">加载中…</div></div>
+        </div>
+
+        <div class="card" id="bt-detail-card" hidden>
+          <div class="card-head">
+            <h2>批次详情</h2>
+            <div class="btn-group">
+              <button class="btn btn-sm btn-danger" type="button" id="bt-cancel" disabled>取消批次</button>
+            </div>
+          </div>
+          <div id="bt-detail-body"><div class="state">尚未选择批次</div></div>
+        </div>
+
+        <div class="card" id="bt-results-card" hidden>
+          <div class="card-head">
+            <h2>结果排行</h2>
+            <span class="muted" id="bt-result-summary">—</span>
+          </div>
+          <div id="bt-results-wrap"><div class="state">尚未选择批次</div></div>
+        </div>
+
+        <div class="card" id="bt-champion-card" hidden>
+          <div class="card-head">
+            <h2>冠军明细</h2>
+            <div class="btn-group">
+              <span class="muted" id="bt-champion-meta">—</span>
+              <button class="btn btn-sm" type="button" id="bt-promote" disabled>提升为候选策略</button>
+            </div>
+          </div>
+          <div id="bt-champion-body"><div class="state">—</div></div>
+
+          <div class="card-head" style="margin-top:16px">
+            <h2>资金曲线</h2>
+            <span class="muted" id="bt-equity-meta">—</span>
+          </div>
+          <div class="bt-picker" id="bt-equity-picker"></div>
+          <div class="chart-wrap"><canvas id="bt-equity-chart"></canvas></div>
+
+          <div class="card-head" style="margin-top:16px">
+            <h2>逐笔成交</h2>
+            <span class="muted" id="bt-trades-meta">—</span>
+          </div>
+          <div id="bt-trades-wrap"><div class="state">暂无成交</div></div>
+        </div>
+      </section>
+
+      <!-- ==================== 10. 影子交易（/api/v1/strategy/shadow/*） ==================== -->
+      <section class="page" data-page="shadow" hidden>
+        <div class="page-head">
+          <div>
+            <h1>影子交易</h1>
+            <p class="muted">策略在本地影子账本里并行记账：按最新行情开仓、分层、标记与退出，全程不发真实订单。可手动推进一轮，也可平掉单笔影子持仓。</p>
+          </div>
+          <div class="page-actions">
+            <span class="hint" id="shadow-updated">—</span>
+            <label class="switch"><input type="checkbox" id="shadow-auto" checked><span>每 5 秒自动刷新</span></label>
+            <button class="btn btn-sm" type="button" id="shadow-refresh">刷新</button>
+            <button class="btn btn-sm btn-primary" type="button" id="shadow-tick">手动推进一轮</button>
+          </div>
+        </div>
+
+        <div class="alert danger" id="shadow-error" hidden></div>
+
+        <div class="card-row" id="shadow-stats"></div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>引擎状态</h2>
+            <span class="muted">GET /api/v1/strategy/shadow/status</span>
+          </div>
+          <div id="shadow-status-body"><div class="state">加载中…</div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>影子持仓</h2>
+            <span class="muted" id="shadow-pos-meta">加载中…</span>
+          </div>
+          <div class="table-wrap" id="shadow-pos-wrap"><div class="state">加载中…</div></div>
+          <div class="pager">
+            <span class="pager-info" id="shadow-pos-info">—</span>
+            <button class="btn btn-sm" type="button" id="shadow-pos-more" hidden>加载更多</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>影子订单</h2>
+            <span class="muted" id="shadow-order-meta">加载中…</span>
+          </div>
+          <div class="table-wrap" id="shadow-order-wrap"><div class="state">加载中…</div></div>
+          <div class="pager">
+            <span class="pager-info" id="shadow-order-info">—</span>
+            <button class="btn btn-sm" type="button" id="shadow-order-more" hidden>加载更多</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>组合快照</h2>
+            <span class="muted" id="shadow-pf-meta">加载中…</span>
+          </div>
+          <div class="chart-wrap shadow-chart"><canvas id="shadow-equity-chart"></canvas></div>
+          <div class="table-wrap" id="shadow-pf-wrap" style="margin-top:12px"><div class="state">加载中…</div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>最近一轮体检</h2>
+            <span class="muted" id="shadow-hl-meta">取自 status.latestHealth</span>
+          </div>
+          <div class="table-wrap" id="shadow-hl-wrap"><div class="state">加载中…</div></div>
+        </div>
+      </section>
+
+      <!-- ==================== 11. 健康度（/api/v1/strategy/health/*） ==================== -->
+      <section class="page" data-page="health" hidden>
+        <div class="page-head">
+          <div>
+            <h1>健康度</h1>
+            <p class="muted">每轮影子 tick 后跑 9 类规则体检：调度、行情新鲜度、资金利用率、仓位退出、资金费率、空仓、实盘门禁、接口错误率、补拉负载。这里看最近一轮结论与历史明细。</p>
+          </div>
+          <div class="page-actions">
+            <span class="hint" id="health-checked-at">—</span>
+            <label class="switch"><input type="checkbox" id="health-auto" checked><span>每 15 秒自动刷新</span></label>
+            <button class="btn btn-sm" type="button" id="health-refresh">刷新</button>
+            <button class="btn btn-sm btn-primary" type="button" id="health-run">立即体检</button>
+          </div>
+        </div>
+
+        <div class="alert danger" id="health-error" hidden></div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>最近一轮体检</h2>
+            <span class="muted" id="health-summary-meta">GET /api/v1/strategy/health/latest</span>
+          </div>
+          <div id="health-summary"><div class="state">加载中…</div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>体检明细</h2>
+            <div class="page-actions">
+              <label class="hint" for="health-level">level</label>
+              <select id="health-level" class="health-level">
+                <option value="">全部</option>
+                <option value="OK">OK</option>
+                <option value="WARN">WARN</option>
+                <option value="FAIL">FAIL</option>
+              </select>
+              <span class="muted" id="health-list-meta">加载中…</span>
+            </div>
+          </div>
+          <div class="table-wrap" id="health-checks-wrap"><div class="state">加载中…</div></div>
+          <div class="pager">
+            <button class="btn btn-sm" type="button" id="health-prev">上一页</button>
+            <span class="pager-info" id="health-page-info">—</span>
+            <button class="btn btn-sm" type="button" id="health-next">下一页</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== 12. 实盘门禁（/api/v1/strategy/live/*） ==================== -->
+      <section class="page" data-page="live" hidden>
+        <div class="page-head">
+          <div>
+            <h1>实盘门禁</h1>
+            <p class="muted">实盘下单前必须过门禁（模式 / 开关 / 密钥 / 持仓上限 / 当日名义 / 健康度 / 补拉负载 / 行情新鲜度 / 接口错误率）。当前为 SHADOW 环境，门禁必然 BLOCK、下单接口以 HTTP 422 拒绝——这是预期行为，不是故障。</p>
+          </div>
+          <div class="page-actions">
+            <span class="hint" id="live-updated">—</span>
+            <label class="switch"><input type="checkbox" id="live-auto" checked><span>每 10 秒自动刷新</span></label>
+            <button class="btn btn-sm" type="button" id="live-refresh">刷新</button>
+          </div>
+        </div>
+
+        <div class="alert danger" id="live-error" hidden></div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>门禁总览</h2>
+            <span class="muted">GET /api/v1/strategy/live/gate</span>
+          </div>
+          <div id="live-gate-summary"><div class="state">加载中…</div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>门禁检查明细</h2>
+            <span class="muted" id="live-checks-meta">加载中…</span>
+          </div>
+          <div class="table-wrap" id="live-checks-wrap"><div class="state">加载中…</div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>风控上限 caps</h2>
+            <span class="muted">gate.caps</span>
+          </div>
+          <div id="live-caps"><div class="state">加载中…</div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>交易所账户</h2>
+            <span class="muted">GET /api/v1/strategy/live/account</span>
+          </div>
+          <div id="live-account"><div class="state">加载中…</div></div>
+        </div>
+
+        <form class="card" id="form-live-order" novalidate>
+          <div class="card-head">
+            <h2>受控下单</h2>
+            <span class="muted">POST /api/v1/strategy/live/orders（门禁不通过返回 422）</span>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label for="live-inst">instId</label>
+              <input id="live-inst" type="text" placeholder="BTC-USDT-SWAP" autocomplete="off">
+              <p class="hint">SWAP / FUTURES，聚焦展开库内合约</p>
+            </div>
+            <div class="field">
+              <label for="live-side">side</label>
+              <select id="live-side">
+                <option value="buy">buy 买入</option>
+                <option value="sell">sell 卖出</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="live-sz">sz 张数</label>
+              <input id="live-sz" type="number" min="1" step="1" placeholder="1">
+              <p class="hint">按合约张数，不是 USD</p>
+            </div>
+            <div class="field">
+              <label for="live-ordtype">ordType</label>
+              <select id="live-ordtype">
+                <option value="market">market</option>
+                <option value="limit">limit</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="live-px">px 限价</label>
+              <input id="live-px" type="number" min="0" step="any" placeholder="限价单必填">
+            </div>
+            <div class="field">
+              <label for="live-tdmode">tdMode</label>
+              <select id="live-tdmode">
+                <option value="isolated">isolated 逐仓</option>
+                <option value="cross">cross 全仓</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="live-confirm">confirm 二次确认口令</label>
+              <input id="live-confirm" type="text" placeholder="REAL 模式填 CONFIRM-REAL-TRADING" autocomplete="off">
+              <p class="hint">只有 mode=REAL 才校验</p>
+            </div>
+            <div class="field">
+              <label>reduceOnly</label>
+              <label class="check inline"><input type="checkbox" id="live-reduce"><span>只减仓</span></label>
+            </div>
+          </div>
+          <div class="form-actions">
+            <span class="hint">提交前会弹二次确认；SHADOW 环境预期被 422 拦截。</span>
+            <div class="btn-group">
+              <button class="btn btn-primary" type="submit" id="live-submit">提交下单</button>
+            </div>
+          </div>
+          <div id="live-order-result" class="result-slot"></div>
+        </form>
+      </section>
+
+      <!-- ==================== 13. 账户概览（/api/v1/account/*） ==================== -->
+      <section class="page" data-page="account" hidden>
+        <div class="page-head">
+          <div>
+            <h1>账户概览</h1>
+            <p class="muted">OKX 只读账户信息：凭证脱敏展示、账户模式、余额明细与交易所持仓。本页只调用只读接口，不会下单 / 撤单 / 划转。</p>
+          </div>
+          <div class="page-actions">
+            <span class="hint" id="account-updated">—</span>
+            <button class="btn btn-sm" type="button" id="account-refresh">刷新</button>
+          </div>
+        </div>
+
+        <div class="alert danger" id="account-error" hidden></div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>凭证与账户</h2>
+            <span class="muted">GET /api/v1/account/summary</span>
+          </div>
+          <div id="account-summary"><div class="state">加载中…</div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>账户余额</h2>
+            <span class="muted">GET /api/v1/account/balance</span>
+          </div>
+          <div id="account-balance"><div class="state">加载中…</div></div>
+          <div class="table-wrap" id="account-balance-table"><div class="state">加载中…</div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2>交易所持仓</h2>
+            <span class="muted">GET /api/v1/account/positions?instType=SWAP</span>
+          </div>
+          <div class="table-wrap" id="account-positions"><div class="state">加载中…</div></div>
+        </div>
+      </section>
+
+      <!-- ==================== 14. 我的订单（/api/v1/account/orders） ==================== -->
+      <section class="page" data-page="orders" hidden>
+        <div class="page-head">
+          <div>
+            <h1>我的订单</h1>
+            <p class="muted">本地影子订单与交易所真实订单分开拉取：local 是本服务自己记录的影子订单，pending / history 走 OKX 订单接口。每个 tab 首次进入才请求一次。</p>
+          </div>
+          <div class="page-actions">
+            <span class="hint" id="orders-updated">—</span>
+            <button class="btn btn-sm" type="button" id="orders-refresh">刷新</button>
+          </div>
+        </div>
+
+        <div class="alert danger" id="orders-error" hidden></div>
+
+        <div class="tabs" id="orders-tabs" role="tablist">
+          <button class="tab is-active" type="button" data-tab="local" role="tab" aria-selected="true">本地影子订单</button>
+          <button class="tab" type="button" data-tab="pending" role="tab" aria-selected="false">交易所挂单</button>
+          <button class="tab" type="button" data-tab="history" role="tab" aria-selected="false">交易所历史</button>
+        </div>
+
+        <div class="card tab-panel is-active" data-panel="local">
+          <div class="card-head">
+            <h2>本地影子订单</h2>
+            <span class="muted" id="orders-local-meta">加载中…</span>
+          </div>
+          <p class="hint">GET /api/v1/account/orders?state=local&amp;instType=SWAP&amp;limit=50</p>
+          <div class="table-wrap" id="orders-local-wrap"><div class="state">加载中…</div></div>
+        </div>
+
+        <div class="card tab-panel" data-panel="pending">
+          <div class="card-head">
+            <h2>交易所当前挂单</h2>
+            <span class="muted" id="orders-pending-meta">尚未加载</span>
+          </div>
+          <p class="hint">GET /api/v1/account/orders?state=pending&amp;instType=SWAP&amp;limit=50</p>
+          <div class="table-wrap" id="orders-pending-wrap"><div class="state">尚未加载</div></div>
+        </div>
+
+        <div class="card tab-panel" data-panel="history">
+          <div class="card-head">
+            <h2>交易所历史订单</h2>
+            <span class="muted" id="orders-history-meta">尚未加载</span>
+          </div>
+          <p class="hint">GET /api/v1/account/orders?state=history&amp;instType=SWAP&amp;limit=50</p>
+          <div class="table-wrap" id="orders-history-wrap"><div class="state">尚未加载</div></div>
+        </div>
+      </section>
+
+      <!-- ==================== 15. 马丁策略（/api/v1/strategy/strategies） ==================== -->
+      <section class="page" data-page="strategies" hidden>
+        <div class="page-head">
+          <div>
+            <h1>马丁策略</h1>
+            <p class="muted">影子引擎里的马丁策略实例：参数、自选合约、持仓与最近订单。点击表格行展开详情，再次点击收起。</p>
+          </div>
+          <div class="page-actions">
+            <span class="hint" id="strategies-updated">—</span>
+            <button class="btn btn-sm" type="button" id="strategies-refresh">刷新</button>
+          </div>
+        </div>
+
+        <div class="alert danger" id="strategies-error" hidden></div>
+
+        <div class="tabs" id="strategies-tabs" role="tablist">
+          <button class="tab is-active" type="button" data-tab="running" role="tab" aria-selected="true">运行中</button>
+          <button class="tab" type="button" data-tab="history" role="tab" aria-selected="false">历史</button>
+        </div>
+
+        <div class="tab-panel is-active" data-panel="running">
+          <div class="card">
+            <div class="card-head">
+              <h2>运行中策略</h2>
+              <span class="muted" id="strategies-running-meta">加载中…</span>
+            </div>
+            <p class="hint" id="strategies-running-def">口径：—</p>
+            <div class="table-wrap" id="strategies-running-wrap"><div class="state">加载中…</div></div>
+          </div>
+        </div>
+
+        <div class="tab-panel" data-panel="history">
+          <div class="card">
+            <div class="card-head">
+              <h2>历史策略</h2>
+              <span class="muted" id="strategies-history-meta">尚未加载</span>
+            </div>
+            <p class="hint">GET /api/v1/strategy/strategies?state=history&amp;limit=50</p>
+            <div class="table-wrap" id="strategies-history-wrap"><div class="state">尚未加载</div></div>
+          </div>
+        </div>
+
+        <div class="card" id="strategies-detail-card" hidden>
+          <div class="card-head">
+            <h2>策略详情 <span class="mono" id="strategies-detail-title"></span></h2>
+            <span class="muted" id="strategies-detail-path">GET /api/v1/strategy/strategies/{id}</span>
+          </div>
+          <div id="strategies-detail"><div class="state">加载中…</div></div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<!-- 全局提示 -->
+<div class="toast-stack" id="toast-stack"></div>
+
+<!-- 确认弹窗（不使用 window.confirm） -->
+<div class="modal-backdrop" id="modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <h3 id="modal-title">确认操作</h3>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-actions">
+      <button class="btn" type="button" id="modal-cancel">取消</button>
+      <button class="btn btn-primary" type="button" id="modal-ok">确认</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js?v=20261101a"></script>
+</body>
+</html>
