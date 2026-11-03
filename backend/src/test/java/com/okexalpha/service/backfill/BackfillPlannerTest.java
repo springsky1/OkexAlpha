@@ -54,7 +54,8 @@ class BackfillPlannerTest {
         return new OkxProperties(base.baseUrl(), base.connectTimeoutMs(), base.readTimeoutMs(),
                 base.userAgent(), base.retry(), base.rateLimit(),
                 new OkxProperties.Backfill(base.backfill().workerThreads(), base.backfill().queueCapacity(),
-                        pageLimit, base.backfill().autoResume(), maxTasksPerJob),
+                        pageLimit, base.backfill().autoResume(), maxTasksPerJob, base.backfill().coverageSkip(),
+                        base.backfill().coverageRefreshMs()),
                 base.sync(), base.schedule(), base.apiLog(), base.db(), base.strategy());
     }
 

@@ -2,8 +2,10 @@ package com.okexalpha.service.account;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
@@ -14,6 +16,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -24,7 +27,9 @@ import com.okexalpha.client.OkxTradeClient;
 import com.okexalpha.client.TransportResponse;
 import com.okexalpha.config.OkxProperties;
 import com.okexalpha.domain.ShadowOrderRow;
+import com.okexalpha.error.NotFoundException;
 import com.okexalpha.repository.ShadowRepository;
+import com.okexalpha.repository.StrategyRepository;
 import com.okexalpha.security.OkxCredentials;
 import com.okexalpha.security.SecretMasker;
 
@@ -41,11 +46,13 @@ class AccountServiceTest {
 
     private OkxTradeClient tradeClient;
     private ShadowRepository shadowRepository;
+    private StrategyRepository strategyRepository;
 
     @BeforeEach
     void setUp() {
         tradeClient = mock(OkxTradeClient.class);
         shadowRepository = mock(ShadowRepository.class);
+        strategyRepository = mock(StrategyRepository.class);
     }
 
     // ------------------------------------------------------------ summary
@@ -441,6 +448,184 @@ class AccountServiceTest {
                 .containsEntry("signalTsMs", null);
     }
 
+    // ------------------------------------------------------------ 订单中心：交易所只读数据
+
+    @Test
+    @DisplayName("历史仓位：instType 缺省 SWAP、limit 夹到 100，字段逐列透传")
+    void positionsHistoryMapsRows() {
+        AccountService service = service(configured(), "OkexAlpha");
+        given(tradeClient.positionsHistory("SWAP", 100)).willReturn(List.of(json("""
+                {"instId":"BTC-USDT-SWAP","instType":"SWAP","mgnMode":"cross","posSide":"long","type":"2",
+                 "pos":"2","lever":"3","openAvgPx":"100","closeAvgPx":"110","markPx":"110","pnl":"20",
+                 "pnlRatio":"0.2","realizedPnl":"20","fee":"-0.1","fundingFee":"-0.02","liqPx":"",
+                 "cTime":"1700000000000","uTime":"1700000100000"}
+                """)));
+
+        Map<String, Object> out = service.positionsHistory(null, 500);
+
+        assertThat(out).containsEntry("ok", true).containsEntry("instType", "SWAP").containsEntry("limit", 100);
+        Map<String, Object> row = list(out.get("items")).get(0);
+        assertThat(row).containsEntry("instId", "BTC-USDT-SWAP").containsEntry("posSide", "long")
+                .containsEntry("realizedPnl", "20").containsEntry("fundingFee", "-0.02")
+                .containsEntry("uTime", "1700000100000");
+    }
+
+    @Test
+    @DisplayName("历史仓位：未配置凭证时给 notice、不发交易所请求")
+    void positionsHistoryWithoutCredentials() {
+        AccountService service = service(OkxProperties.defaults(), "OkexAlpha");
+
+        Map<String, Object> out = service.positionsHistory("SWAP", 10);
+
+        assertThat(out.get("ok")).isNull();
+        assertThat((String) out.get("notice")).contains("OKX_API_KEY");
+        assertThat(list(out.get("items"))).isEmpty();
+        verifyNoInteractions(tradeClient);
+    }
+
+    @Test
+    @DisplayName("成交明细：上游限流折成 error 块，绝不抛给前端")
+    void fillsFoldsUpstreamError() {
+        AccountService service = service(configured(), "OkexAlpha");
+        given(tradeClient.fills("SWAP", 50)).willThrow(new OkxApiException(OkxApiException.Kind.RATE_LIMITED,
+                "50011", 429, "too many requests", null));
+
+        Map<String, Object> out = service.fills(null, null);
+
+        assertThat(out).containsEntry("ok", false);
+        assertThat(map(out.get("error"))).containsEntry("kind", "RATE_LIMITED").containsEntry("code", "50011");
+        assertThat(list(out.get("items"))).isEmpty();
+    }
+
+    @Test
+    @DisplayName("资金账单 / 借币记录：成功映射，instId 透传给客户端")
+    void billsAndBorrowRepayMapRows() {
+        AccountService service = service(configured(), "OkexAlpha");
+        given(tradeClient.bills(50)).willReturn(List.of(json("""
+                {"billId":"1","instId":"BTC-USDT-SWAP","instType":"SWAP","type":"2","subType":"3",
+                 "ccy":"USDT","bal":"100","balChg":"1","sz":"2","px":"100","fee":"-0.1","pnl":"3",
+                 "interest":"0","ts":"1700000000000"}
+                """)));
+        given(tradeClient.borrowRepay(50, "USDT")).willReturn(List.of(json("""
+                {"ccy":"USDT","type":"1","amt":"50","interest":"0.1","total":"50.1","ts":"1700000000000",
+                 "instId":"USDT","mgnMode":"cross"}
+                """)));
+
+        Map<String, Object> bills = service.bills(null);
+        Map<String, Object> borrow = service.borrowRepay(null, "USDT");
+
+        assertThat(bills).containsEntry("ok", true);
+        assertThat(list(bills.get("items")).get(0)).containsEntry("billId", "1").containsEntry("balChg", "1");
+        assertThat(borrow).containsEntry("ok", true).containsEntry("instId", "USDT");
+        assertThat(list(borrow.get("items")).get(0)).containsEntry("ccy", "USDT")
+                .containsEntry("total", "50.1");
+    }
+
+    // ------------------------------------------------------------ 订单中心：策略聚合与停止
+
+    @Test
+    @DisplayName("策略中心：有持仓用 margin 聚合，总收益=已实现+浮动，收益率=总收益/投入")
+    void strategyCenterAggregatesStats() {
+        AccountService service = service(configured(), "OkexAlpha");
+        given(strategyRepository.list("all", null, null, 50, 0)).willReturn(List.of(
+                strategyRow(7L, "BTC 马丁", "PROMOTED", "SHADOW", 500d,
+                        "{\"instIds\":[\"BTC-USDT-SWAP\",\"ETH-USDT-SWAP\"]}"),
+                strategyRow(8L, "ETH 马丁", "DRAFT", "SHADOW", 300d, "{\"instIds\":[\"ETH-USDT-SWAP\"]}")));
+        given(strategyRepository.count("all", null, null)).willReturn(2L);
+        given(strategyRepository.centerStats(any())).willReturn(Map.of(
+                7L, new StrategyRepository.StrategyCenterStats(1000d, 40d, -10d, 2, 3, 9,
+                        OffsetDateTime.parse("2026-02-03T04:05:06Z")),
+                8L, StrategyRepository.StrategyCenterStats.EMPTY));
+
+        Map<String, Object> out = service.strategyCenter(null, null, null);
+
+        assertThat(out).containsEntry("state", "all").containsEntry("limit", 50).containsEntry("offset", 0)
+                .containsEntry("total", 2L);
+        List<Map<String, Object>> items = list(out.get("items"));
+        Map<String, Object> first = items.get(0);
+        assertThat(first).containsEntry("id", 7L).containsEntry("name", "BTC 马丁")
+                .containsEntry("running", true).containsEntry("investedUsd", 1000d)
+                .containsEntry("realizedPnlUsd", 40d).containsEntry("unrealizedPnlUsd", -10d)
+                .containsEntry("totalPnlUsd", 30d).containsEntry("returnPct", 3d)
+                .containsEntry("openPositions", 2).containsEntry("closedPositions", 3)
+                .containsEntry("orderCount", 9).containsEntry("lastOrderAt", "2026-02-03T04:05:06Z");
+        assertThat(first.get("instIds")).isEqualTo(List.of("BTC-USDT-SWAP", "ETH-USDT-SWAP"));
+        // 没有持仓行 → 回落到 每币本金 × universe 数量；盈亏为 0 时收益率是 0 而不是 null。
+        Map<String, Object> second = items.get(1);
+        assertThat(second).containsEntry("investedUsd", 300d).containsEntry("totalPnlUsd", 0d)
+                .containsEntry("returnPct", 0d).containsEntry("running", false)
+                .containsEntry("openPositions", 0);
+    }
+
+    @Test
+    @DisplayName("策略中心：投入为 0 时收益率为 null（不除零）")
+    void strategyCenterReturnPctIsNullWhenNoInvestment() {
+        AccountService service = service(configured(), "OkexAlpha");
+        given(strategyRepository.list("running", null, null, 10, 0)).willReturn(List.of(
+                strategyRow(9L, "空仓策略", "CANDIDATE", "SHADOW", null, "[]")));
+        given(strategyRepository.count("running", null, null)).willReturn(1L);
+        given(strategyRepository.centerStats(any())).willReturn(Map.of());
+
+        Map<String, Object> item = list(service.strategyCenter("running", 10, 0).get("items")).get(0);
+
+        assertThat(item).containsEntry("investedUsd", 0d).containsEntry("returnPct", null)
+                .containsEntry("running", true);
+        assertThat((List<?>) item.get("instIds")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("策略中心：state 只接受 running|history|all")
+    void strategyCenterRejectsUnknownState() {
+        AccountService service = service(configured(), "OkexAlpha");
+
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> service.strategyCenter("archive", null, null))
+                .withMessage("state must be one of running|history|all");
+        verifyNoInteractions(strategyRepository);
+    }
+
+    @Test
+    @DisplayName("停止策略：STOPPED 原样落库，返回实际状态与 requestedStatus")
+    void setStrategyStatusPersistsStopped() {
+        AccountService service = service(configured(), "OkexAlpha");
+        given(strategyRepository.find(7L)).willReturn(Optional.of(
+                strategyRow(7L, "BTC 马丁", "PROMOTED", "SHADOW", 100d, "{}")));
+        given(strategyRepository.updateStatus(7L, "STOPPED")).willReturn(1);
+
+        Map<String, Object> out = service.setStrategyStatus(7L, "stopped");
+
+        assertThat(out).containsEntry("id", 7L).containsEntry("status", "STOPPED")
+                .containsEntry("requestedStatus", "STOPPED").containsEntry("running", false);
+    }
+
+    @Test
+    @DisplayName("启用策略：改回 CANDIDATE 后 running 为 true（不再固定 false）")
+    void setStrategyStatusReEnables() {
+        AccountService service = service(configured(), "OkexAlpha");
+        given(strategyRepository.find(7L)).willReturn(Optional.of(
+                strategyRow(7L, "BTC 马丁", "STOPPED", "SHADOW", 100d, "{}")));
+        given(strategyRepository.updateStatus(7L, "CANDIDATE")).willReturn(1);
+
+        Map<String, Object> out = service.setStrategyStatus(7L, "candidate");
+
+        assertThat(out).containsEntry("status", "CANDIDATE").containsEntry("running", true);
+    }
+
+    @Test
+    @DisplayName("停止策略：非法状态抛 IllegalArgumentException，不存在抛 NotFoundException")
+    void setStrategyStatusValidates() {
+        AccountService service = service(configured(), "OkexAlpha");
+        given(strategyRepository.find(9L)).willReturn(Optional.empty());
+
+        assertThatIllegalArgumentException()
+                .isThrownBy(() -> service.setStrategyStatus(7L, "DELETED"))
+                .withMessage("status must be one of CANDIDATE|PROMOTED|STOPPED|ARCHIVED");
+        assertThatThrownBy(() -> service.setStrategyStatus(9L, "STOPPED"))
+                .isInstanceOf(NotFoundException.class)
+                .hasMessageContaining("strategy 9 not found");
+        verify(strategyRepository, never()).updateStatus(anyLong(), anyString());
+    }
+
     // ------------------------------------------------------------ 辅助
 
     private AccountService service(OkxProperties properties, String keyLabel) {
@@ -448,7 +633,8 @@ class AccountServiceTest {
     }
 
     private AccountService service(OkxProperties properties, OkxCredentials okxCredentials, String keyLabel) {
-        return new AccountService(properties, okxCredentials, tradeClient, shadowRepository, keyLabel);
+        return new AccountService(properties, okxCredentials, tradeClient, shadowRepository, strategyRepository,
+                MAPPER, keyLabel);
     }
 
     /** 等价于"环境变量装载"的内存快照；三件套不全时就是未配置。 */
@@ -478,6 +664,13 @@ class AccountServiceTest {
                 defaults.schedule(), defaults.apiLog(), defaults.db(),
                 new OkxProperties.Strategy(strategy.enabled(), strategy.shadow(), strategy.health(),
                         strategy.backtest(), trading));
+    }
+
+    private static StrategyRepository.StrategyRow strategyRow(long id, String name, String status, String mode,
+            Double capitalPerCoinUsd, String universeJson) {
+        return new StrategyRepository.StrategyRow(id, name, status, mode, "{}", universeJson, capitalPerCoinUsd,
+                null, null, OffsetDateTime.parse("2026-01-01T00:00:00Z"),
+                OffsetDateTime.parse("2026-01-02T00:00:00Z"));
     }
 
     private static JsonNode order(String ordId) {

@@ -65,12 +65,34 @@ okx:
     page-limit: 300
     auto-resume: true
     max-tasks-per-job: 5000
+    # 补拉前先查库内覆盖率：同一品种同一周期已经下过的区间不再重复拉，只补缺失的部分
+    # （写入本来就是幂等的，这里省的是上游配额和等待时间）。关掉后恢复整段重拉。
+    coverage-skip: true
+    # 尾部强制重拉 horizon（毫秒）：请求窗口的末端距当前时间不超过该值时，连同最年轻的已落库 K 线
+    # 一起重拉——OKX 的 K 线要过一会儿才 confirm，值会变。0 = 只补缺口，任何年轻区间都不重拉。
+    coverage-refresh-ms: 86400000
   sync:
     include-options: true
+    # 定时增量补数据（需求 #2）：按 okx_sync_cursor 里 kline|klineType|instId|bar 的水位，
+    # 每 interval-ms 把 K 线补到 now - lag-ms。默认开启；关掉后只有
+    # POST /api/v1/sync/incremental/run 能手动补一轮（且仍然受下面同一套跳过规则约束）。
+    incremental:
+      enabled: true
+      # 两轮之间的间隔（fixedDelay：上一轮跑完再等这么久），默认 5 分钟
+      interval-ms: 300000
+      # 游标为空时的播种回看窗口：只写 now - lookback-ms 作为基线，不拉数据
+      lookback-ms: 3600000
+      # 安全尾巴：补到 now - lag-ms 为止，给 OKX 的 K 线留出 confirm 时间
+      lag-ms: 60000
+      bars: "1m,5m,15m,1H"
+      kline-types: "CANDLE,MARK"
+      # 每轮最多补多少个 live SWAP 品种（按 inst_id 升序取）
+      max-inst-ids: 20
   schedule:
-    # 打开 Spring 调度：影子引擎（每 5s 一轮）与健康度检查（每 60s 一轮）依赖它。
-    # 关掉后两个定时任务不再自动跑，只能靠 POST /api/v1/strategy/shadow/tick 与
-    # POST /api/v1/strategy/health/check 手动触发。
+    # 打开 Spring 调度：影子引擎（每 5s 一轮）、健康度检查（每 60s 一轮）与
+    # 定时增量补数据（okx.sync.incremental，默认每 5min 一轮）都依赖它。
+    # 关掉后三个定时任务不再自动跑，只能靠 POST /api/v1/strategy/shadow/tick、
+    # POST /api/v1/strategy/health/check 与 POST /api/v1/sync/incremental/run 手动触发。
     enabled: true
   api-log:
     enabled: true

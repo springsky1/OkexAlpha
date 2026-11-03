@@ -17,6 +17,7 @@ import org.springframework.stereotype.Service;
 import com.okexalpha.client.OkxApiClient;
 import com.okexalpha.config.OkxProperties;
 import com.okexalpha.domain.MinOrderRow;
+import com.okexalpha.error.BadRequestException;
 import com.okexalpha.domain.ShadowPositionRow;
 import com.okexalpha.repository.ShadowRepository;
 import com.okexalpha.repository.ShadowRepository.ShadowStrategyRow;
@@ -32,6 +33,9 @@ import tools.jackson.databind.ObjectMapper;
  * <p>每轮（默认 5s）：拉一次 SWAP 行情 → 对每个影子策略的 universe 逐币判断开仓/加仓/止盈/止损/强平/超时 →
  * 写 okx_shadow_order + okx_shadow_position → 最后写一条 okx_portfolio_snapshot。</p>
  *
+ * <p>另支持「手工复制开仓」（{@link #openManual}）：把一笔真实订单按当前价写进影子账本，strategy_id 为空；
+ * 这类持仓在 tick 末尾用 Trading 默认参数复用同一套管理逻辑（止盈/止损/强平/超时/加仓），同样占用 maxPositions 名额。</p>
+ *
  * <p>开仓金额口径（R5）：默认取平台允许的<b>最小下单量</b>（okx_min_order.min_sz 张，名义 ≈ minNotionalUsd），
  * 这样每天可以开一批单笔最小仓，避免单个大持仓造成大幅亏损；只有显式给 okx_strategy.capital_per_coin_usd
  * 或 okx.strategy.trading.capital-per-coin-usd 时才按该金额放大。</p>
@@ -43,6 +47,13 @@ public class ShadowEngine {
 
     private static final String REASON_OPEN = "OPEN";
     private static final String REASON_LAYER = "LAYER";
+    /** 手工复制开仓写入的影子订单原因（strategy_id 为空，不与策略开仓混在一起）。 */
+    private static final String REASON_COPY_OPEN = "COPY_OPEN";
+
+    /** OKX 合约杠杆上限（手工开仓的校验边界）。 */
+    public static final int LEVERAGE_MAX = 125;
+    /** 手工开仓的缺省杠杆（与策略参数缺省值一致）。 */
+    public static final int DEFAULT_LEVERAGE = 5;
 
     private final ShadowRepository repository;
     private final OkxApiClient client;
@@ -103,6 +114,41 @@ public class ShadowEngine {
         return out;
     }
 
+    /**
+     * Trading 默认参数：手工复制开仓（未指定策略时）与手工持仓的管理口径。
+     * 层数/步长/止盈止损沿用策略缺省（5 层 / 2.5% / 1.0 / 2% / 25% / 48h），费率与滑点取 okx.strategy.trading。
+     */
+    public StrategyParams defaultParams() {
+        OkxProperties.Strategy.Trading trading = properties.strategy().trading();
+        return new StrategyParams(StrategyParams.LONG, 100d, DEFAULT_LEVERAGE, 5, 2.5d, 1.0d, 2.0d, 25.0d, 48,
+                trading.feeTaker(), 0.01d, trading.slippageBps());
+    }
+
+    /**
+     * 解析参数 JSON（字段缺省值与 paramsOf 完全一致）；手工复制开仓要沿用已有策略参数时复用。
+     *
+     * <p>字段非法（如 stopLossPct 越界）时由 StrategyParams 的校验抛 IllegalArgumentException，调用方转 400。</p>
+     */
+    public StrategyParams paramsFromJson(String paramsJson) {
+        JsonNode node = paramsJson == null ? null : objectMapper.readTree(paramsJson);
+        String side = firstText(node, StrategyParams.LONG, "side");
+        if (!StrategyParams.LONG.equals(side) && !StrategyParams.SHORT.equals(side)) {
+            side = StrategyParams.LONG;
+        }
+        double margin = firstNumber(node, 100d, "initialMarginUsd");
+        return new StrategyParams(side, margin,
+                (int) Math.round(firstNumber(node, 5d, "leverage")),
+                (int) Math.round(firstNumber(node, 5d, "maxLayers")),
+                firstNumber(node, 2.5d, "layerStepPct"),
+                firstNumber(node, 1.0d, "layerScale"),
+                firstNumber(node, 2.0d, "takeProfitPct"),
+                firstNumber(node, 25.0d, "stopLossPct"),
+                (int) Math.round(firstNumber(node, 48d, "maxHoldHours")),
+                firstNumber(node, 0.0005d, "feeTaker"),
+                firstNumber(node, 0.01d, "fundingPer8hPct"),
+                firstNumber(node, 2d, "slippageBps"));
+    }
+
     /** 一轮 tick 的结果汇总。 */
     public record TickResult(int strategies, int opened, int closed, int layered, int marked, int skipped,
             long durationMs, String note) {
@@ -128,7 +174,9 @@ public class ShadowEngine {
         try {
             List<ShadowStrategyRow> active = repository.activeShadowStrategies();
             strategies = active.size();
-            Map<String, Double> prices = active.isEmpty() ? Map.of() : prices();
+            // 手工复制开仓的持仓（strategy_id IS NULL）也要盯盘，所以它们存在时同样拉一次行情
+            List<ShadowPositionRow> manual = repository.manualOpenPositions();
+            Map<String, Double> prices = active.isEmpty() && manual.isEmpty() ? Map.of() : prices();
             lastPrices = prices;
             int maxPositions = Math.max(1, properties.strategy().trading().maxPositions());
             for (ShadowStrategyRow strategy : active) {
@@ -164,7 +212,7 @@ public class ShadowEngine {
                             skipped++;
                         }
                     } else {
-                        Outcome outcome = manage(strategy, params, pos, px, longSide);
+                        Outcome outcome = manage(strategy.id(), params, pos, px, longSide);
                         if (outcome.closed()) {
                             closed++;
                         } else {
@@ -173,6 +221,26 @@ public class ShadowEngine {
                         if (outcome.layered()) {
                             layered++;
                         }
+                    }
+                }
+            }
+            // 手工持仓：不受策略 universe 限制，统一用 Trading 默认参数管理（同样计入 maxPositions 名额）
+            if (!manual.isEmpty()) {
+                StrategyParams manualParams = defaultParams();
+                for (ShadowPositionRow pos : manual) {
+                    Double px = prices.get(pos.instId());
+                    if (px == null || px <= 0d) {
+                        skipped++;
+                        continue;
+                    }
+                    Outcome outcome = manage(null, manualParams, pos, px, StrategyParams.LONG.equals(pos.side()));
+                    if (outcome.closed()) {
+                        closed++;
+                    } else {
+                        marked++;
+                    }
+                    if (outcome.layered()) {
+                        layered++;
                     }
                 }
             }
@@ -196,11 +264,60 @@ public class ShadowEngine {
 
     // ---------------------------------------------------------------- 开仓 / 管理
 
+    /** 手工复制开仓的记账入参（instId/side/sz/px 的校验与取价在 QueryService，这里只负责落账）。 */
+    public record ManualOpenSpec(String instId, boolean longSide, Double sz, double px, int leverage, Long strategyId,
+            StrategyParams params) {
+    }
+
+    /** 手工复制开仓的记账结果（positionId/orderId 便于前端回显）。 */
+    public record ManualOpenResult(long positionId, long orderId, String instId, String side, double sz,
+            boolean usedMinSz, double entryPx, double notionalUsd, double marginUsd, double liqPx) {
+    }
+
+    /**
+     * 手工复制开仓：把一笔真实订单（instId/side/sz/px/leverage）按当前价写进影子账本，<b>不向交易所发单</b>。
+     *
+     * <p>sz 为空取平台最小下单量（okx_min_order.min_sz）；最小下单量快照缺失或不可交易时抛 BadRequest，
+     * 提示先刷新最小下单量（POST /api/v1/strategy/min-order/refresh）。</p>
+     */
+    public ManualOpenResult openManual(ManualOpenSpec spec) {
+        MinOrderRow minOrder = repository.findMinOrder(spec.instId());
+        if (!usable(minOrder)) {
+            throw new BadRequestException("no min-order snapshot for " + spec.instId()
+                    + "; refresh it first (POST /api/v1/strategy/min-order/refresh)");
+        }
+        double perContract = minOrder.notionalPerContractUsd();
+        double sz = spec.sz() == null ? minOrder.minSz() : spec.sz();
+        if (!(sz > 0d) || !Double.isFinite(sz)) {
+            throw new BadRequestException("sz must be > 0");
+        }
+        boolean usedMinSz = spec.sz() == null;
+        boolean longSide = spec.longSide();
+        double notional = perContract * sz;
+        double slip = spec.params().slippageBps() / 10000d;
+        double entry = longSide ? spec.px() * (1d + slip) : spec.px() * (1d - slip);
+        double margin = notional / spec.leverage();
+        double liq = ShadowMath.liqPrice(entry, longSide, spec.leverage());
+        String side = longSide ? StrategyParams.LONG : StrategyParams.SHORT;
+        long now = System.currentTimeMillis();
+        long orderId = repository.insertOrder(spec.strategyId(), spec.instId(), longSide ? "buy" : "sell", "market", sz,
+                entry, notional, "FILLED", REASON_COPY_OPEN, now);
+        long positionId = repository.insertPosition(spec.strategyId(), spec.instId(), side, sz, entry, spec.px(),
+                notional, 0d, spec.leverage(), liq, margin);
+        return new ManualOpenResult(positionId, orderId, spec.instId(), side, sz, usedMinSz, entry, notional, margin,
+                liq);
+    }
+
+    /** 最小下单量快照是否可用于记账（张数与每张名义都必须为正）。 */
+    public static boolean usable(MinOrderRow minOrder) {
+        return minOrder != null && minOrder.tradable() && minOrder.minSz() != null && minOrder.minSz() > 0d
+                && minOrder.notionalPerContractUsd() != null && minOrder.notionalPerContractUsd() > 0d;
+    }
+
     private boolean openPosition(ShadowStrategyRow strategy, StrategyParams params, String instId, double px,
             boolean longSide) {
         MinOrderRow minOrder = repository.findMinOrder(instId);
-        if (minOrder == null || !minOrder.tradable() || minOrder.minSz() == null || minOrder.minSz() <= 0d
-                || minOrder.notionalPerContractUsd() == null || minOrder.notionalPerContractUsd() <= 0d) {
+        if (!usable(minOrder)) {
             return false;
         }
         double perContract = minOrder.notionalPerContractUsd();
@@ -239,8 +356,8 @@ public class ShadowEngine {
     private record Outcome(boolean closed, boolean layered) {
     }
 
-    private Outcome manage(ShadowStrategyRow strategy, StrategyParams params, ShadowPositionRow pos, double px,
-            boolean longSide) {
+    /** strategyId 为空表示手工复制开仓的持仓（按 Trading 默认参数管理）。 */
+    private Outcome manage(Long strategyId, StrategyParams params, ShadowPositionRow pos, double px, boolean longSide) {
         double entry = pos.entryPx() == null ? px : pos.entryPx();
         double sz = pos.sz();
         double notional = pos.notionalUsd() == null ? entry * sz : pos.notionalUsd();
@@ -253,16 +370,16 @@ public class ShadowEngine {
 
         // 1) 强平（逐仓：最多亏掉该仓位保证金）
         if (longSide ? px <= liq : px >= liq) {
-            close(strategy, pos, "LIQUIDATION", px, longSide, slip, true);
+            close(strategyId, pos, "LIQUIDATION", px, longSide, slip, true);
             return new Outcome(true, false);
         }
         // 2) 止损
         if (longSide ? px <= stop : px >= stop) {
-            close(strategy, pos, "SL", px, longSide, slip, false);
+            close(strategyId, pos, "SL", px, longSide, slip, false);
             return new Outcome(true, false);
         }
         // 3) 逆势加仓（马丁）：自首层入场价的不利幅度达到 layerStepPct 且未达最大层数
-        int layers = repository.countLayers(strategy.id(), pos.instId());
+        int layers = repository.countLayers(strategyId, pos.instId());
         double adversePct = longSide ? (entry - px) / entry * 100d : (px - entry) / entry * 100d;
         if (layers < params.maxLayers() && adversePct >= params.layerStepPct()) {
             double base = ShadowMath.baseNotional(notional, params.layerScale(), layers);
@@ -276,7 +393,7 @@ public class ShadowEngine {
                 double newMargin = newNotional / leverage;
                 double newLiq = ShadowMath.liqPrice(newAvg, longSide, leverage);
                 long now = System.currentTimeMillis();
-                repository.insertOrder(strategy.id(), pos.instId(), longSide ? "buy" : "sell", "market", addSz,
+                repository.insertOrder(strategyId, pos.instId(), longSide ? "buy" : "sell", "market", addSz,
                         addPx, addNotional, "FILLED", REASON_LAYER, now);
                 repository.updatePosition(pos.id(), newSz, newAvg, px,
                         ShadowMath.unrealized(newAvg, px, newSz, longSide), newNotional, newMargin, newLiq);
@@ -285,14 +402,14 @@ public class ShadowEngine {
         }
         // 4) 止盈
         if (longSide ? px >= takeProfit : px <= takeProfit) {
-            close(strategy, pos, "TP", px, longSide, slip, false);
+            close(strategyId, pos, "TP", px, longSide, slip, false);
             return new Outcome(true, false);
         }
         // 5) 超时
         if (pos.openedAt() != null) {
             long heldHours = Duration.between(pos.openedAt(), OffsetDateTime.now()).toHours();
             if (heldHours >= params.maxHoldHours()) {
-                close(strategy, pos, "TIMEOUT", px, longSide, slip, false);
+                close(strategyId, pos, "TIMEOUT", px, longSide, slip, false);
                 return new Outcome(true, false);
             }
         }
@@ -300,14 +417,14 @@ public class ShadowEngine {
         return new Outcome(false, false);
     }
 
-    private void close(ShadowStrategyRow strategy, ShadowPositionRow pos, String reason, double px, boolean longSide,
+    private void close(Long strategyId, ShadowPositionRow pos, String reason, double px, boolean longSide,
             double slip, boolean liquidated) {
         double exit = longSide ? px * (1d - slip) : px * (1d + slip);
         double pnl = liquidated
                 ? -Math.max(0d, pos.marginUsd() == null ? 0d : pos.marginUsd())
                 : ShadowMath.unrealized(pos.entryPx() == null ? exit : pos.entryPx(), exit, pos.sz(), longSide);
         long now = System.currentTimeMillis();
-        repository.insertOrder(strategy.id(), pos.instId(), longSide ? "sell" : "buy", "market", pos.sz(), exit,
+        repository.insertOrder(strategyId, pos.instId(), longSide ? "sell" : "buy", "market", pos.sz(), exit,
                 pos.notionalUsd(), "FILLED", reason, now);
         repository.closePosition(pos.id(), exit, pnl);
     }
@@ -370,23 +487,7 @@ public class ShadowEngine {
     // ---------------------------------------------------------------- 参数解析
 
     private StrategyParams paramsOf(ShadowStrategyRow strategy) {
-        JsonNode node = strategy.paramsJson() == null ? null : objectMapper.readTree(strategy.paramsJson());
-        String side = firstText(node, StrategyParams.LONG, "side");
-        if (!StrategyParams.LONG.equals(side) && !StrategyParams.SHORT.equals(side)) {
-            side = StrategyParams.LONG;
-        }
-        double margin = firstNumber(node, 100d, "initialMarginUsd");
-        return new StrategyParams(side, margin,
-                (int) Math.round(firstNumber(node, 5d, "leverage")),
-                (int) Math.round(firstNumber(node, 5d, "maxLayers")),
-                firstNumber(node, 2.5d, "layerStepPct"),
-                firstNumber(node, 1.0d, "layerScale"),
-                firstNumber(node, 2.0d, "takeProfitPct"),
-                firstNumber(node, 25.0d, "stopLossPct"),
-                (int) Math.round(firstNumber(node, 48d, "maxHoldHours")),
-                firstNumber(node, 0.0005d, "feeTaker"),
-                firstNumber(node, 0.01d, "fundingPer8hPct"),
-                firstNumber(node, 2d, "slippageBps"));
+        return paramsFromJson(strategy.paramsJson());
     }
 
     private List<String> universeOf(ShadowStrategyRow strategy) {

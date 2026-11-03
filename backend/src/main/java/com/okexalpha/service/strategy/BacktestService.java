@@ -25,6 +25,7 @@ import com.okexalpha.repository.BacktestRepository;
 import com.okexalpha.strategy.engine.BacktestMetrics;
 import com.okexalpha.strategy.engine.BacktestOutcome;
 import com.okexalpha.strategy.engine.MartingaleBacktester;
+import com.okexalpha.strategy.engine.ParamRanges;
 import com.okexalpha.strategy.engine.ParamSampler;
 import com.okexalpha.strategy.engine.PriceBar;
 import com.okexalpha.strategy.engine.StrategyParams;
@@ -149,7 +150,29 @@ public class BacktestService {
         int want = clamp(request.combos() == null ? properties.strategy().backtest().defaultSampleSize()
                 : request.combos(), 1, maxCombos);
         long seed = request.seed() == null ? 20261101L : request.seed();
-        List<StrategyParams> combos = ParamSampler.sample(ParamSampler.grid(base), want, seed);
+
+        // 可选的自定义参数范围：先校验，再按范围展开网格，最后仍按 want 抽样（保证复现性）
+        ParamRanges ranges = request.ranges();
+        int rangeCombos = 0;
+        boolean rangeTruncated = false;
+        List<StrategyParams> grid;
+        if (ranges == null) {
+            grid = ParamSampler.grid(base);
+        } else {
+            try {
+                ranges.validate();
+            } catch (IllegalArgumentException ex) {
+                throw new BadRequestException(ex.getMessage());
+            }
+            rangeCombos = ranges.combos();
+            grid = ParamSampler.grid(base, ranges);
+            rangeTruncated = rangeCombos > maxCombos || rangeCombos > grid.size();
+            if (rangeTruncated) {
+                log.info("backtest param ranges expand to {} combo(s), over max-combos {} (kept {}), sampling {}",
+                        rangeCombos, maxCombos, grid.size(), want);
+            }
+        }
+        List<StrategyParams> combos = ParamSampler.sample(grid, want, seed);
         int topN = clamp(request.topN() == null ? 5 : request.topN(), 1, 20);
 
         Map<String, Object> requestMap = new LinkedHashMap<>();
@@ -166,9 +189,40 @@ public class BacktestService {
         requestMap.put("feeTaker", properties.strategy().trading().feeTaker());
         requestMap.put("slippageBps", properties.strategy().trading().slippageBps());
         requestMap.put("seed", seed);
+        if (ranges != null) {
+            requestMap.put("paramRanges", rangeMap(ranges));
+            requestMap.put("rangeCombos", rangeCombos);
+            requestMap.put("rangeTruncated", rangeTruncated);
+        }
 
         return new Plan(bar, startMs, endMs, cutMs, marginUsd, topN, coins, combos, requestMap, request.label(),
                 request.strategyId());
+    }
+
+    /** 把自定义范围转成可 JSON 化的 map（写进 requestJson，便于日后对照复现）。 */
+    private static Map<String, Object> rangeMap(ParamRanges ranges) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        putRange(out, "leverage", ranges.leverage());
+        putRange(out, "maxLayers", ranges.maxLayers());
+        putRange(out, "layerStepPct", ranges.layerStepPct());
+        putRange(out, "layerScale", ranges.layerScale());
+        putRange(out, "takeProfitPct", ranges.takeProfitPct());
+        putRange(out, "stopLossPct", ranges.stopLossPct());
+        out.put("sides", ranges.sides().isEmpty()
+                ? List.of(StrategyParams.LONG, StrategyParams.SHORT) : ranges.sides());
+        return out;
+    }
+
+    private static void putRange(Map<String, Object> target, String name, ParamRanges.Range range) {
+        if (range == null) {
+            target.put(name, null);
+            return;
+        }
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("min", range.min());
+        value.put("max", range.max());
+        value.put("step", range.step());
+        target.put(name, value);
     }
 
     // ------------------------------------------------------------------ 执行

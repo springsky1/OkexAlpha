@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
@@ -61,6 +62,18 @@ public class StrategyRepository {
             int closedPositions, int orderCount, OffsetDateTime lastOrderAt) {
 
         public static final StrategyStats EMPTY = new StrategyStats(0, 0d, 0d, 0, 0, null);
+    }
+
+    /**
+     * 订单中心（策略 tab）聚合：累计投入 / 已实现 / 未实现 / 仓位数 / 订单数与最近下单时间。
+     *
+     * <p>investedUsd 为 null 表示"没有可加总的持仓行"，由调用方回落到
+     * {@code capital_per_coin_usd * universe 数量}。</p>
+     */
+    public record StrategyCenterStats(Double investedUsd, double realizedPnlUsd, double unrealizedPnlUsd,
+            int openPositions, int closedPositions, int orderCount, OffsetDateTime lastOrderAt) {
+
+        public static final StrategyCenterStats EMPTY = new StrategyCenterStats(null, 0d, 0d, 0, 0, 0, null);
     }
 
     public List<StrategyRow> list(String state, String status, String mode, int limit, int offset) {
@@ -137,6 +150,63 @@ public class StrategyRepository {
                     lastOrderAt.get(id)));
         }
         return out;
+    }
+
+    /**
+     * 一页策略的订单中心聚合：单条 SQL 覆盖策略表 + 影子持仓 + 影子订单，避免逐策略 N+1。
+     *
+     * <p>盈亏口径与影子账本一致：okx_shadow_position 没有 realized 列，平仓时把已实现写进
+     * {@code unrealized_pnl}，所以 CLOSED 行的该列就是已实现盈亏、OPEN 行的就是浮动盈亏。</p>
+     */
+    public Map<Long, StrategyCenterStats> centerStats(Collection<Long> strategyIds) {
+        if (strategyIds == null || strategyIds.isEmpty()) {
+            return Map.of();
+        }
+        String placeholders = String.join(",", java.util.Collections.nCopies(strategyIds.size(), "?"));
+
+        Map<Long, StrategyCenterStats> out = new HashMap<>();
+        // 显式声明 RowCallbackHandler：表达式体 lambda 同时满足 RowMapper/ResultSetExtractor，
+        // 靠推断选重载会让 mock 测试命不中真正调用的方法。
+        RowCallbackHandler handler = (ResultSet rs) -> {
+            out.put(rs.getLong("strategy_id"), new StrategyCenterStats(
+                    rs.getObject("invested", Double.class),
+                    rs.getDouble("realized"),
+                    rs.getDouble("unrealized"),
+                    rs.getInt("open_cnt"),
+                    rs.getInt("closed_cnt"),
+                    rs.getInt("order_cnt"),
+                    rs.getObject("last_decided_at", OffsetDateTime.class)));
+        };
+        jdbcTemplate.query("""
+                SELECT s.id AS strategy_id,
+                       sum(p.margin_usd) AS invested,
+                       coalesce(sum(p.unrealized_pnl) FILTER (WHERE p.status = 'CLOSED'), 0) AS realized,
+                       coalesce(sum(p.unrealized_pnl) FILTER (WHERE p.status = 'OPEN'), 0) AS unrealized,
+                       count(p.id) FILTER (WHERE p.status = 'OPEN') AS open_cnt,
+                       count(p.id) FILTER (WHERE p.status = 'CLOSED') AS closed_cnt,
+                       (SELECT count(*) FROM okx_shadow_order o WHERE o.strategy_id = s.id) AS order_cnt,
+                       (SELECT max(o.decided_at) FROM okx_shadow_order o WHERE o.strategy_id = s.id) AS last_decided_at
+                FROM okx_strategy s
+                LEFT JOIN okx_shadow_position p ON p.strategy_id = s.id
+                WHERE s.id IN (%s)
+                GROUP BY s.id
+                """.formatted(placeholders), handler, strategyIds.toArray());
+        return out;
+    }
+
+    /**
+     * 状态归一化：去空白 + 大写。STOPPED 自迁移 010 起是一等状态（ck_okx_strategy_status 允许它），
+     * 不再折成 ARCHIVED —— {@link #RUNNING_PREDICATE} 只认 SHADOW + CANDIDATE/PROMOTED，
+     * 停掉的策略同样不会被影子引擎调度。
+     */
+    public static String normalizeStatus(String status) {
+        return status == null ? "" : status.trim().toUpperCase(java.util.Locale.ROOT);
+    }
+
+    /** 改策略状态；返回受影响行数（0 表示策略不存在）。 */
+    public int updateStatus(long id, String status) {
+        return jdbcTemplate.update("UPDATE okx_strategy SET status = ?, updated_at = now() WHERE id = ?",
+                normalizeStatus(status), id);
     }
 
     private static String where(String state, String status, String mode, List<Object> args) {

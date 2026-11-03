@@ -240,6 +240,28 @@ describe('ShadowView 组件', () => {
           { id: 9, instId: 'BTC-USDT-SWAP', side: 'long', sz: 1, entryPx: 100, markPx: 110, unrealizedPnl: 10, leverage: 5, liqPx: 80, marginUsd: 100, openedAt: 1700000000000 }
         ] as never)
       }
+      if (path === EP.accountOrders) {
+        return Promise.resolve({
+          state: 'history',
+          items: [
+            { instId: 'BTC-USDT-SWAP', posSide: 'long', side: 'buy', sz: 2, avgPx: 80000, lever: 5 }
+          ]
+        } as never)
+      }
+      if (path === EP.strategyShadowOpenPreflight) {
+        return Promise.resolve({
+          instId: 'BTC-USDT-SWAP',
+          tradable: true,
+          minSz: 1,
+          lotSz: 0.1,
+          notionalPerContractUsd: 100,
+          minNotionalUsd: 100,
+          lastPx: 80000,
+          suggestedSz: 1,
+          suggestedMarginUsd: 20,
+          leverageMax: 125
+        } as never)
+      }
       if (path === EP.strategyShadowOrders) return Promise.resolve([] as never)
       if (path === EP.strategyShadowPortfolio) return Promise.resolve([] as never)
       return Promise.resolve(null as never)
@@ -262,6 +284,61 @@ describe('ShadowView 组件', () => {
     await btn.trigger('click')
     await flushPromises()
     expect(apiPost).toHaveBeenCalledWith('/api/v1/strategy/shadow/positions/9/close')
+    w.unmount()
+  })
+
+  it('复制开仓弹窗：打开后按 preflight 回填默认张数/价格，提交带上完整 body', async () => {
+    const w = mount(ShadowView, { global: { plugins: [createPinia()] } })
+    await flushPromises()
+
+    const openBtn = w.find('button[data-action="copy-open"]')
+    expect(openBtn.exists()).toBe(true)
+    await openBtn.trigger('click')
+    await flushPromises()
+
+    const dialog = w.find('[data-dialog="shadow-copy-open"]')
+    expect(dialog.exists()).toBe(true)
+    expect(dialog.text()).toContain('只写入影子账本')
+    expect(apiGet).toHaveBeenCalledWith(EP.accountOrders, { state: 'history', instType: 'SWAP', limit: 100 })
+
+    // 从最近真实订单里选第一笔 → 回填合约并查询该合约的最小下单量
+    await w.find('select[data-field="recent"]').setValue('0')
+    await flushPromises()
+    expect(apiGet).toHaveBeenCalledWith(EP.strategyShadowOpenPreflight, { instId: 'BTC-USDT-SWAP' })
+
+    expect((w.find('input[data-field="instId"]').element as HTMLInputElement).value).toBe('BTC-USDT-SWAP')
+    expect((w.find('input[data-field="sz"]').element as HTMLInputElement).value).toBe('1')
+    expect((w.find('input[data-field="px"]').element as HTMLInputElement).value).toBe('80000')
+    expect(w.text()).toContain('平台最小张数 minSz')
+
+    await w.find('button[data-action="submit"]').trigger('click')
+    await flushPromises()
+    expect(apiPost).toHaveBeenCalledWith(EP.strategyShadowOpen, {
+      instId: 'BTC-USDT-SWAP',
+      side: 'long',
+      sz: 1,
+      px: 80000,
+      leverage: 5,
+      params: { takeProfitPct: 2, stopLossPct: 25, maxLayers: 5 }
+    })
+    expect(w.find('[data-dialog="shadow-copy-open"]').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('复制开仓失败时展示错误文案且弹窗不关闭', async () => {
+    vi.mocked(apiPost).mockRejectedValueOnce(new Error('sz must be > 0') as never)
+    const w = mount(ShadowView, { global: { plugins: [createPinia()] } })
+    await flushPromises()
+
+    await w.find('button[data-action="copy-open"]').trigger('click')
+    await flushPromises()
+    await w.find('select[data-field="recent"]').setValue('0')
+    await flushPromises()
+    await w.find('button[data-action="submit"]').trigger('click')
+    await flushPromises()
+
+    expect(w.find('[data-dialog="shadow-copy-open"]').exists()).toBe(true)
+    expect(w.text()).toContain('复制开仓失败：sz must be > 0')
     w.unmount()
   })
 })

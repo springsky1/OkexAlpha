@@ -1,5 +1,7 @@
 package com.okexalpha.web.dto;
 
+import com.okexalpha.strategy.engine.ParamRanges;
+
 import java.util.List;
 
 /**
@@ -18,6 +20,7 @@ import java.util.List;
  * @param seed             抽样随机种子（默认 20261101）
  * @param label            批次备注
  * @param strategyId       关联策略 id（可空）
+ * @param ranges           自定义参数范围（可空 = 用内置 648 组网格）；按范围展开后再抽 combos 组
  */
 public record BacktestRequest(
         List<String> instIds,
@@ -32,5 +35,6 @@ public record BacktestRequest(
         Double fundingPer8hPct,
         Long seed,
         String label,
-        Long strategyId) {
+        Long strategyId,
+        ParamRanges ranges) {
 }

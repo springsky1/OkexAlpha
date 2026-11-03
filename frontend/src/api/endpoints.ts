@@ -58,5 +58,25 @@ export const EP = {
   accountBalance: '/api/v1/account/balance',
   accountPositions: '/api/v1/account/positions',
   accountOrders: '/api/v1/account/orders',
-  accountSummary: '/api/v1/account/summary'
+  accountSummary: '/api/v1/account/summary',
+
+  /* 订单中心（账户组）：交易所只读流水 + 本地策略聚合 */
+  accountPositionsHistory: '/api/v1/account/positions-history',
+  accountFills: '/api/v1/account/fills',
+  accountBills: '/api/v1/account/bills',
+  accountBorrowRepay: '/api/v1/account/borrow-repay',
+  accountStrategyCenter: '/api/v1/account/strategy-center',
+  accountStrategyCenterStatus: (id: string) =>
+    '/api/v1/account/strategy-center/' + encodeURIComponent(id) + '/status',
+
+  /* 回测参数范围预设 */
+  strategyBacktestPresets: '/api/v1/strategy/backtests/presets',
+
+  /* 定时增量补数据 */
+  syncIncremental: '/api/v1/sync/incremental',
+  syncIncrementalRun: '/api/v1/sync/incremental/run',
+
+  /* 影子：复制开仓真实订单 */
+  strategyShadowOpen: '/api/v1/strategy/shadow/open',
+  strategyShadowOpenPreflight: '/api/v1/strategy/shadow/open-preflight'
 } as const

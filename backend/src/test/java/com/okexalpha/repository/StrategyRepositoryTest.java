@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -212,6 +213,98 @@ class StrategyRepositoryTest {
         assertThat(sqls.get(0)).contains("FROM okx_shadow_position").contains("IN (?,?)");
         assertThat(sqls.get(1)).contains("FROM okx_shadow_order").contains("IN (?,?)");
         assertThat(argumentArray(0)).containsExactly(7L, 8L);
+    }
+
+    @Test
+    @DisplayName("centerStats 传空集合时直接返回空 Map，不查库")
+    void centerStatsWithEmptyIdsSkipsDatabase() {
+        assertThat(repository.centerStats(List.of())).isEmpty();
+        assertThat(repository.centerStats(null)).isEmpty();
+        verifyNoInteractions(jdbc);
+    }
+
+    @Test
+    @DisplayName("centerStats 一条 SQL 聚合持仓与订单，避免逐策略 N+1")
+    void centerStatsAggregatesInSingleQuery() throws Exception {
+        ResultSet rs = mock(ResultSet.class);
+        when(rs.getLong("strategy_id")).thenReturn(7L);
+        when(rs.getObject("invested", Double.class)).thenReturn(1000d);
+        when(rs.getDouble("realized")).thenReturn(40d);
+        when(rs.getDouble("unrealized")).thenReturn(-10d);
+        when(rs.getInt("open_cnt")).thenReturn(2);
+        when(rs.getInt("closed_cnt")).thenReturn(3);
+        when(rs.getInt("order_cnt")).thenReturn(9);
+        OffsetDateTime lastOrderAt = OffsetDateTime.parse("2026-02-03T04:05:06Z");
+        when(rs.getObject("last_decided_at", OffsetDateTime.class)).thenReturn(lastOrderAt);
+
+        doAnswer(inv -> {
+            sqls.add(inv.getArgument(0));
+            argumentArrays.add(flatten(inv.getRawArguments()));
+            RowCallbackHandler handler = inv.getArgument(1);
+            handler.processRow(rs);
+            return null;
+        }).when(jdbc).query(anyString(), any(RowCallbackHandler.class), any(Object[].class));
+
+        Map<Long, StrategyRepository.StrategyCenterStats> stats = repository.centerStats(List.of(7L, 8L));
+
+        assertThat(sqls).hasSize(1);
+        assertThat(sqls.get(0))
+                .contains("FROM okx_strategy s")
+                .contains("LEFT JOIN okx_shadow_position p")
+                .contains("count(*) FROM okx_shadow_order o")
+                .contains("IN (?,?)")
+                .contains("GROUP BY s.id");
+        assertThat(argumentArray(0)).containsExactly(7L, 8L);
+        assertThat(stats).containsOnlyKeys(7L);
+        StrategyRepository.StrategyCenterStats seven = stats.get(7L);
+        assertThat(seven.investedUsd()).isEqualTo(1000d);
+        assertThat(seven.realizedPnlUsd()).isEqualTo(40d);
+        assertThat(seven.unrealizedPnlUsd()).isEqualTo(-10d);
+        assertThat(seven.openPositions()).isEqualTo(2);
+        assertThat(seven.closedPositions()).isEqualTo(3);
+        assertThat(seven.orderCount()).isEqualTo(9);
+        assertThat(seven.lastOrderAt()).isEqualTo(lastOrderAt);
+    }
+
+    @Test
+    @DisplayName("centerStats 没有持仓行时 investedUsd 为 null，交给上层回落")
+    void centerStatsKeepsNullInvestedWhenNoPositions() throws Exception {
+        ResultSet rs = mock(ResultSet.class);
+        when(rs.getLong("strategy_id")).thenReturn(8L);
+        when(rs.getObject("invested", Double.class)).thenReturn(null);
+        when(rs.getObject("last_decided_at", OffsetDateTime.class)).thenReturn(null);
+
+        doAnswer(inv -> {
+            RowCallbackHandler handler = inv.getArgument(1);
+            handler.processRow(rs);
+            return null;
+        }).when(jdbc).query(anyString(), any(RowCallbackHandler.class), any(Object[].class));
+
+        StrategyRepository.StrategyCenterStats stats = repository.centerStats(List.of(8L)).get(8L);
+
+        assertThat(stats.investedUsd()).isNull();
+        assertThat(stats).isEqualTo(new StrategyRepository.StrategyCenterStats(null, 0d, 0d, 0, 0, 0, null));
+    }
+
+    @Test
+    @DisplayName("updateStatus 原样落库（STOPPED 是一等状态），归一化只做去空白与大写")
+    void updateStatusPersistsStatusAsIs() {
+        when(jdbc.update(anyString(), any(Object[].class))).thenReturn(1);
+
+        assertThat(repository.updateStatus(7L, "stopped")).isEqualTo(1);
+
+        verify(jdbc).update(ArgumentMatchers.contains("UPDATE okx_strategy SET status = ?"), eq("STOPPED"), eq(7L));
+        assertThat(StrategyRepository.normalizeStatus(" stopped ")).isEqualTo("STOPPED");
+        assertThat(StrategyRepository.normalizeStatus("promoted")).isEqualTo("PROMOTED");
+        assertThat(StrategyRepository.normalizeStatus(null)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("updateStatus 返回 0 表示策略不存在，交给上层抛 404")
+    void updateStatusReturnsZeroWhenMissing() {
+        when(jdbc.update(anyString(), any(Object[].class))).thenReturn(0);
+
+        assertThat(repository.updateStatus(404L, "ARCHIVED")).isZero();
     }
 
     // ------------------------------------------------------------------ 辅助

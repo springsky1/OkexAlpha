@@ -16,6 +16,7 @@ import {
   toLocalInput
 } from '../../lib/format'
 import { COLOR_AXIS, COLOR_DOWN, COLOR_GRID, COLOR_UP, NL, TAB } from '../../lib/labels'
+import { emptyRangesForm, rangesToPayload, type BtRangesFormState, type BtRangesPayload } from './btRanges'
 
 /* 只有 PENDING/RUNNING 需要轮询 */
 export const BT_ACTIVE_STATUSES = ['PENDING', 'RUNNING']
@@ -157,6 +158,10 @@ export interface BtSubmitFormState {
   margin: string
   maxHold: string
   coinLimit: string
+  /** 选中的参数范围预设 key（null = 自定义/默认） */
+  rangesPreset: string | null
+  /** 参数范围（可选）：6 个维度全空 = 用内置网格 */
+  ranges: BtRangesFormState
 }
 
 export interface BtSubmitBody {
@@ -169,6 +174,8 @@ export interface BtSubmitBody {
   coinLimit?: number
   maxHoldHours?: number
   marginUsd?: number
+  /** 自定义参数范围；全空时不带该字段（服务端走内置 648 组网格） */
+  ranges?: BtRangesPayload
 }
 
 /* ---------- 后端 JSON 字符串字段容错解析 ---------- */
@@ -366,6 +373,13 @@ export function btBuildPayload(form: BtSubmitFormState): BtPayloadResult {
     return { ok: false, message: '回测窗口最短 7 天，请调整起止时间', box: true }
   }
 
+  let ranges: BtRangesPayload | null
+  try {
+    ranges = rangesToPayload(form.ranges)
+  } catch (err) {
+    return { ok: false, message: (err as Error).message || '参数范围不合法', box: false }
+  }
+
   const body: BtSubmitBody = { bar: bar }
   if (instIds.length) body.instIds = instIds
   if (startMs !== null) body.startMs = startMs
@@ -375,6 +389,7 @@ export function btBuildPayload(form: BtSubmitFormState): BtPayloadResult {
   if (coinLimit.value !== undefined) body.coinLimit = coinLimit.value
   if (maxHold.value !== undefined) body.maxHoldHours = maxHold.value
   if (margin.value !== undefined) body.marginUsd = margin.value
+  if (ranges) body.ranges = ranges
   return { ok: true, body: body }
 }
 
@@ -387,7 +402,9 @@ export const BT_FORM_DEFAULTS: BtSubmitFormState = {
   topN: '5',
   margin: '100',
   maxHold: '48',
-  coinLimit: '12'
+  coinLimit: '12',
+  rangesPreset: null,
+  ranges: emptyRangesForm()
 }
 
 /* 小样本预设：2 个币 · bar=1H · combos=40 · topN=3 · 近 90 天 */
@@ -402,7 +419,9 @@ export function btSampleForm(now: number): BtSubmitFormState {
     topN: '3',
     margin: '100',
     maxHold: '48',
-    coinLimit: '12'
+    coinLimit: '12',
+    rangesPreset: null,
+    ranges: emptyRangesForm()
   }
 }
 

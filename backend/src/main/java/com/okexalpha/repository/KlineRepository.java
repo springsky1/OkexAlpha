@@ -106,6 +106,29 @@ public class KlineRepository {
         return jdbcTemplate.query(sql.toString(), ROW_MAPPER, args.toArray());
     }
 
+    /** 窗口内已存在 K 线的覆盖率：最早/最晚 ts 与行数（无数据时 minTs/maxTs 为 null、rows 为 0）。 */
+    public record Coverage(Long minTs, Long maxTs, long rows) {
+    }
+
+    /**
+     * 查某个品种某个周期在 [fromMs, toMs] 内已有哪些 K 线。
+     *
+     * <p>给补拉前判断「还缺哪些区间」用（见 {@code KlineCoverage#plan}）。聚合全部落在主键
+     * (kline_type, inst_id, bar, ts_ms) 的范围扫描里，每个 task 只查一次，代价远小于它省下的翻页；
+     * 与 {@link #count()} 不同，这里必须带时间窗口，否则就是上亿行的全表扫描。</p>
+     */
+    public Coverage coverage(String klineType, String instId, String bar, long fromMs, long toMs) {
+        List<Coverage> rows = jdbcTemplate.query("""
+                SELECT MIN(ts_ms) AS min_ts, MAX(ts_ms) AS max_ts, COUNT(*) AS row_count
+                  FROM okx_kline
+                 WHERE kline_type = ? AND inst_id = ? AND bar = ? AND ts_ms >= ? AND ts_ms <= ?
+                """,
+                (rs, rowNum) -> new Coverage(rs.getObject("min_ts", Long.class), rs.getObject("max_ts", Long.class),
+                        rs.getLong("row_count")),
+                klineType, instId, bar, fromMs, toMs);
+        return rows.isEmpty() ? new Coverage(null, null, 0L) : rows.get(0);
+    }
+
     /**
      * 近似总行数。
      *

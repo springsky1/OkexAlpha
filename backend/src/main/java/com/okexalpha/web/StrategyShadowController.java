@@ -7,6 +7,7 @@ import java.util.Map;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -20,6 +21,7 @@ import com.okexalpha.service.strategy.shadow.ShadowEngine;
 import com.okexalpha.service.strategy.shadow.ShadowQueryService;
 import com.okexalpha.web.dto.ApiResponse;
 import com.okexalpha.web.dto.PageArgs;
+import com.okexalpha.web.dto.ShadowOpenRequest;
 
 /**
  * 影子订单 / 健康度接口（阶段 C / P2、P3，纯本地账本，不发真实订单）。
@@ -30,6 +32,8 @@ import com.okexalpha.web.dto.PageArgs;
  *   <li>GET  /api/v1/strategy/shadow/orders?instId=             影子订单</li>
  *   <li>GET  /api/v1/strategy/shadow/portfolio                  组合快照</li>
  *   <li>POST /api/v1/strategy/shadow/tick                       手动跑一轮影子引擎</li>
+ *   <li>GET  /api/v1/strategy/shadow/open-preflight?instId=     复制开仓预检（最小张数/最新价/建议值）</li>
+ *   <li>POST /api/v1/strategy/shadow/open                       复制一笔真实订单进影子账本（不发单）</li>
  *   <li>POST /api/v1/strategy/shadow/positions/{id}/close       手动平掉一个影子持仓</li>
  *   <li>GET  /api/v1/strategy/health/latest                     最近一轮体检结论</li>
  *   <li>GET  /api/v1/strategy/health/checks?level=FAIL          体检历史</li>
@@ -49,6 +53,18 @@ public class StrategyShadowController {
     @GetMapping("/shadow/status")
     public ApiResponse<Map<String, Object>> status() {
         return ApiResponse.ok(service.status());
+    }
+
+    /** 复制开仓预检：最小下单量快照 + 最新价 + 建议张数/保证金。 */
+    @GetMapping("/shadow/open-preflight")
+    public ApiResponse<Map<String, Object>> openPreflight(@RequestParam(required = false) String instId) {
+        return ApiResponse.ok(service.openPreflight(instId));
+    }
+
+    /** 复制开仓：只写本地影子账本，不会向 OKX 发单。 */
+    @PostMapping("/shadow/open")
+    public ApiResponse<Map<String, Object>> open(@RequestBody ShadowOpenRequest body) {
+        return ApiResponse.ok(service.open(body));
     }
 
     @GetMapping("/shadow/positions")

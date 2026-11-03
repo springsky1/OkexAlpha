@@ -6,6 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
 
 import org.slf4j.Logger;
@@ -17,11 +18,14 @@ import com.okexalpha.client.OkxApiException;
 import com.okexalpha.client.OkxTradeClient;
 import com.okexalpha.config.OkxProperties;
 import com.okexalpha.domain.ShadowOrderRow;
+import com.okexalpha.error.NotFoundException;
 import com.okexalpha.repository.ShadowRepository;
+import com.okexalpha.repository.StrategyRepository;
 import com.okexalpha.security.OkxCredentials;
 import com.okexalpha.security.SecretMasker;
 
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * 账户节点（只读）：交易所账户配置 / 余额 / 持仓 / 我的订单 + 本地影子订单。
@@ -50,19 +54,28 @@ public class AccountService {
     private static final int MAX_LIMIT = 200;
     private static final int OKX_MAX_LIMIT = 100;
 
+    /** 订单中心策略行允许的目标状态（STOPPED 自迁移 010 起可直接入库，见 db/migrations/010_strategy_status_stopped.sql）。 */
+    private static final Set<String> CENTER_STATUSES = Set.of("CANDIDATE", "PROMOTED", "STOPPED", "ARCHIVED");
+
     private final OkxProperties properties;
     /** 当前生效凭证（环境变量或库内密文解密后的内存快照）。 */
     private final OkxCredentials okxCredentials;
     private final OkxTradeClient tradeClient;
     private final ShadowRepository shadowRepository;
+    private final StrategyRepository strategyRepository;
+    /** 只用来解析 okx_strategy.universe 的 jsonb 文本（instIds 列表）。 */
+    private final ObjectMapper objectMapper;
     private final String keyLabel;
 
     public AccountService(OkxProperties properties, OkxCredentials okxCredentials, OkxTradeClient tradeClient,
-            ShadowRepository shadowRepository, @Value("${okx.account.key-label:OkexAlpha}") String keyLabel) {
+            ShadowRepository shadowRepository, StrategyRepository strategyRepository, ObjectMapper objectMapper,
+            @Value("${okx.account.key-label:OkexAlpha}") String keyLabel) {
         this.properties = properties;
         this.okxCredentials = okxCredentials;
         this.tradeClient = tradeClient;
         this.shadowRepository = shadowRepository;
+        this.strategyRepository = strategyRepository;
+        this.objectMapper = objectMapper;
         this.keyLabel = keyLabel == null || keyLabel.isBlank() ? "OkexAlpha" : keyLabel.trim();
     }
 
@@ -293,7 +306,291 @@ public class AccountService {
         return out;
     }
 
+    // -------------------------------------------------- 订单中心：交易所只读数据
+
+    /** 历史仓位（已平仓；OKX 只保留最近 3 个月）。 */
+    public Map<String, Object> positionsHistory(String instType, Integer limit) {
+        String type = instTypeOrSwap(instType);
+        int size = clampOkxLimit(limit);
+        Map<String, Object> out = emptyEnvelope(properties.strategy().trading(), "positions-history");
+        out.put("instType", type);
+        out.put("limit", size);
+        if (!credentialsReady()) {
+            return out;
+        }
+        guarded(out, "positions-history", () -> {
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (JsonNode node : tradeClient.positionsHistory(type, size)) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("instId", text(node, "instId"));
+                row.put("instType", text(node, "instType"));
+                row.put("mgnMode", text(node, "mgnMode"));
+                row.put("posSide", text(node, "posSide"));
+                row.put("type", text(node, "type"));
+                row.put("pos", text(node, "pos"));
+                row.put("lever", text(node, "lever"));
+                row.put("openAvgPx", text(node, "openAvgPx"));
+                row.put("closeAvgPx", text(node, "closeAvgPx"));
+                row.put("markPx", text(node, "markPx"));
+                row.put("pnl", text(node, "pnl"));
+                row.put("pnlRatio", text(node, "pnlRatio"));
+                row.put("realizedPnl", text(node, "realizedPnl"));
+                row.put("fee", text(node, "fee"));
+                row.put("fundingFee", text(node, "fundingFee"));
+                row.put("liqPx", text(node, "liqPx"));
+                row.put("cTime", text(node, "cTime"));
+                row.put("uTime", text(node, "uTime"));
+                rows.add(row);
+            }
+            out.put("items", rows);
+            return null;
+        });
+        return out;
+    }
+
+    /** 成交明细（最近 3 个月）。 */
+    public Map<String, Object> fills(String instType, Integer limit) {
+        String type = instTypeOrSwap(instType);
+        int size = clampOkxLimit(limit);
+        Map<String, Object> out = emptyEnvelope(properties.strategy().trading(), "fills");
+        out.put("instType", type);
+        out.put("limit", size);
+        if (!credentialsReady()) {
+            return out;
+        }
+        guarded(out, "fills", () -> {
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (JsonNode node : tradeClient.fills(type, size)) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("instId", text(node, "instId"));
+                row.put("instType", text(node, "instType"));
+                row.put("tradeId", text(node, "tradeId"));
+                row.put("ordId", text(node, "ordId"));
+                row.put("side", text(node, "side"));
+                row.put("posSide", text(node, "posSide"));
+                row.put("fillSz", text(node, "fillSz"));
+                row.put("fillPx", text(node, "fillPx"));
+                row.put("fillTime", text(node, "fillTime"));
+                row.put("fee", text(node, "fee"));
+                row.put("feeCcy", text(node, "feeCcy"));
+                row.put("execType", text(node, "execType"));
+                row.put("tag", text(node, "tag"));
+                row.put("pnl", text(node, "pnl"));
+                rows.add(row);
+            }
+            out.put("items", rows);
+            return null;
+        });
+        return out;
+    }
+
+    /** 资金账单（最近 7 天）。 */
+    public Map<String, Object> bills(Integer limit) {
+        int size = clampOkxLimit(limit);
+        Map<String, Object> out = emptyEnvelope(properties.strategy().trading(), "bills");
+        out.put("limit", size);
+        if (!credentialsReady()) {
+            return out;
+        }
+        guarded(out, "bills", () -> {
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (JsonNode node : tradeClient.bills(size)) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("billId", text(node, "billId"));
+                row.put("instId", text(node, "instId"));
+                row.put("instType", text(node, "instType"));
+                row.put("type", text(node, "type"));
+                row.put("subType", text(node, "subType"));
+                row.put("ccy", text(node, "ccy"));
+                row.put("bal", text(node, "bal"));
+                row.put("balChg", text(node, "balChg"));
+                row.put("sz", text(node, "sz"));
+                row.put("px", text(node, "px"));
+                row.put("fee", text(node, "fee"));
+                row.put("pnl", text(node, "pnl"));
+                row.put("interest", text(node, "interest"));
+                row.put("ts", text(node, "ts"));
+                rows.add(row);
+            }
+            out.put("items", rows);
+            return null;
+        });
+        return out;
+    }
+
+    /** 借币/还币记录；instId 可选（只查单个币种）。 */
+    public Map<String, Object> borrowRepay(Integer limit, String instId) {
+        int size = clampOkxLimit(limit);
+        Map<String, Object> out = emptyEnvelope(properties.strategy().trading(), "borrow-repay");
+        out.put("instId", instId);
+        out.put("limit", size);
+        if (!credentialsReady()) {
+            return out;
+        }
+        guarded(out, "borrow-repay", () -> {
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (JsonNode node : tradeClient.borrowRepay(size, instId)) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("ccy", text(node, "ccy"));
+                row.put("type", text(node, "type"));
+                row.put("amt", text(node, "amt"));
+                row.put("interest", text(node, "interest"));
+                row.put("total", text(node, "total"));
+                row.put("ts", text(node, "ts"));
+                row.put("instId", text(node, "instId"));
+                row.put("mgnMode", text(node, "mgnMode"));
+                rows.add(row);
+            }
+            out.put("items", rows);
+            return null;
+        });
+        return out;
+    }
+
+    // -------------------------------------------------- 订单中心：策略聚合与停止
+
+    /**
+     * 订单中心「策略」tab：本地策略的投资/收益聚合（不打交易所接口）。
+     *
+     * @param state running|history|all（默认 all，口径与 {@link StrategyRepository#RUNNING_PREDICATE} 一致）
+     */
+    public Map<String, Object> strategyCenter(String state, Integer limit, Integer offset) {
+        String resolvedState = state == null || state.isBlank() ? "all" : state.trim().toLowerCase(Locale.ROOT);
+        if (!"running".equals(resolvedState) && !"history".equals(resolvedState) && !"all".equals(resolvedState)) {
+            throw new IllegalArgumentException("state must be one of running|history|all");
+        }
+        int size = limit == null ? DEFAULT_LIMIT : Math.min(Math.max(limit, 1), MAX_LIMIT);
+        int skip = offset == null || offset < 0 ? 0 : offset;
+
+        List<StrategyRepository.StrategyRow> rows = strategyRepository.list(resolvedState, null, null, size, skip);
+        Map<Long, StrategyRepository.StrategyCenterStats> stats = strategyRepository.centerStats(rows.stream()
+                .map(StrategyRepository.StrategyRow::id)
+                .toList());
+
+        List<Map<String, Object>> items = new ArrayList<>(rows.size());
+        for (StrategyRepository.StrategyRow row : rows) {
+            items.add(centerView(row, stats.get(row.id())));
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("state", resolvedState);
+        out.put("limit", size);
+        out.put("offset", skip);
+        out.put("total", strategyRepository.count(resolvedState, null, null));
+        out.put("items", items);
+        return out;
+    }
+
+    /**
+     * 停止/启用策略（订单中心策略行的操作列）。
+     *
+     * <p>只改本地 okx_strategy.status：不下单、不撤单、不触发引擎 tick。响应里的 status 是库里实际落到的值
+     * （STOPPED 自迁移 010 起是一等状态，原样落库），requestedStatus 保留调用方原意。</p>
+     */
+    public Map<String, Object> setStrategyStatus(long id, String status) {
+        String requested = status == null ? "" : status.trim().toUpperCase(Locale.ROOT);
+        if (!CENTER_STATUSES.contains(requested)) {
+            throw new IllegalArgumentException("status must be one of CANDIDATE|PROMOTED|STOPPED|ARCHIVED");
+        }
+        StrategyRepository.StrategyRow row = strategyRepository.find(id)
+                .orElseThrow(() -> new NotFoundException("strategy " + id + " not found"));
+        if (strategyRepository.updateStatus(id, requested) == 0) {
+            throw new NotFoundException("strategy " + id + " not found");
+        }
+        String persisted = StrategyRepository.normalizeStatus(requested);
+        // running 取决于落库后的 status 与 mode：STOPPED/ARCHIVED 一律 false，改回 CANDIDATE/PROMOTED 又变回 true。
+        boolean running = "SHADOW".equalsIgnoreCase(row.mode())
+                && ("CANDIDATE".equals(persisted) || "PROMOTED".equals(persisted));
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("id", id);
+        out.put("status", persisted);
+        out.put("requestedStatus", requested);
+        out.put("running", running);
+        return out;
+    }
+
+    private Map<String, Object> centerView(StrategyRepository.StrategyRow row,
+            StrategyRepository.StrategyCenterStats stats) {
+        StrategyRepository.StrategyCenterStats s = stats == null
+                ? StrategyRepository.StrategyCenterStats.EMPTY
+                : stats;
+        List<String> instIds = instIds(row.universeJson());
+        // 累计投入：优先用影子持仓 margin 之和；没有任何持仓行时回落到「每币本金 × universe 币数」。
+        double investedUsd = s.investedUsd() != null
+                ? s.investedUsd()
+                : row.capitalPerCoinUsd() != null && !instIds.isEmpty()
+                        ? row.capitalPerCoinUsd() * instIds.size()
+                        : 0d;
+        double totalPnlUsd = s.realizedPnlUsd() + s.unrealizedPnlUsd();
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("id", row.id());
+        item.put("name", row.name());
+        item.put("status", row.status());
+        item.put("mode", row.mode());
+        item.put("running", isRunning(row));
+        item.put("instIds", instIds);
+        item.put("capitalPerCoinUsd", row.capitalPerCoinUsd());
+        item.put("investedUsd", investedUsd);
+        item.put("realizedPnlUsd", s.realizedPnlUsd());
+        item.put("unrealizedPnlUsd", s.unrealizedPnlUsd());
+        item.put("totalPnlUsd", totalPnlUsd);
+        // 投入为 0 时收益率无意义（除零），返回 null 让前端显示 "—"。
+        item.put("returnPct", investedUsd > 0 ? totalPnlUsd / investedUsd * 100d : null);
+        item.put("openPositions", s.openPositions());
+        item.put("closedPositions", s.closedPositions());
+        item.put("orderCount", s.orderCount());
+        item.put("lastOrderAt", s.lastOrderAt() == null ? null : s.lastOrderAt().toString());
+        return item;
+    }
+
+    private static boolean isRunning(StrategyRepository.StrategyRow row) {
+        return row.mode() != null && "SHADOW".equalsIgnoreCase(row.mode())
+                && row.status() != null
+                && ("CANDIDATE".equalsIgnoreCase(row.status()) || "PROMOTED".equalsIgnoreCase(row.status()));
+    }
+
     // ------------------------------------------------------------------ 内部
+
+    private static String instTypeOrSwap(String instType) {
+        return instType == null || instType.isBlank() ? "SWAP" : instType.trim().toUpperCase(Locale.ROOT);
+    }
+
+    /** OKX 单页上限 100；默认 50，越界夹到 1..100。 */
+    private static int clampOkxLimit(Integer limit) {
+        int size = limit == null ? DEFAULT_LIMIT : limit;
+        return Math.min(Math.max(size, 1), OKX_MAX_LIMIT);
+    }
+
+    /** 解析 universe::text：现行格式 {"instIds":[...]}，历史格式是顶层数组，两种都认。 */
+    private List<String> instIds(String universeJson) {
+        if (universeJson == null || universeJson.isBlank()) {
+            return List.of();
+        }
+        try {
+            JsonNode root = objectMapper.readTree(universeJson);
+            if (root == null || root.isNull()) {
+                return List.of();
+            }
+            JsonNode array = root.isArray() ? root : root.get("instIds");
+            if (array == null || !array.isArray()) {
+                return List.of();
+            }
+            List<String> out = new ArrayList<>(array.size());
+            for (JsonNode node : array) {
+                if (node == null || node.isNull()) {
+                    continue;
+                }
+                String value = node.asString();
+                if (value != null && !value.isBlank()) {
+                    out.add(value.trim());
+                }
+            }
+            return out;
+        } catch (RuntimeException ex) {
+            // 脏 JSON 不让整页 500：当成没有自选合约。
+            log.warn("strategy universe json is not parsable: {}", ex.getMessage());
+            return List.of();
+        }
+    }
 
     private Map<String, Object> emptyEnvelope(OkxProperties.Strategy.Trading trading, String state) {
         Map<String, Object> out = new LinkedHashMap<>();

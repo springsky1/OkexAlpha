@@ -128,6 +128,15 @@ public class ShadowRepository {
                 POSITION_MAPPER, strategyId);
     }
 
+    /**
+     * 手工复制开仓的持仓（strategy_id IS NULL）：不属于任何策略，由 tick 用 Trading 默认参数管理
+     * （止盈/止损/强平/超时/逆势加仓都与策略持仓同一套逻辑）。
+     */
+    public List<ShadowPositionRow> manualOpenPositions() {
+        return jdbcTemplate.query(POSITION_COLUMNS + " WHERE status = 'OPEN' AND strategy_id IS NULL ORDER BY id",
+                POSITION_MAPPER);
+    }
+
     public List<ShadowPositionRow> positions(String status, int limit, int offset) {
         if (status == null || status.isBlank()) {
             return jdbcTemplate.query(POSITION_COLUMNS + " ORDER BY id DESC LIMIT ? OFFSET ?", POSITION_MAPPER,

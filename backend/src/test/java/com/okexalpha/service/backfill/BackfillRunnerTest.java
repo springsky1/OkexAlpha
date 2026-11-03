@@ -296,7 +296,8 @@ class BackfillRunnerTest {
         return new OkxProperties(base.baseUrl(), base.connectTimeoutMs(), base.readTimeoutMs(), base.userAgent(),
                 base.retry(), base.rateLimit(),
                 new OkxProperties.Backfill(workerThreads, base.backfill().queueCapacity(), base.backfill().pageLimit(),
-                        base.backfill().autoResume(), base.backfill().maxTasksPerJob()),
+                        base.backfill().autoResume(), base.backfill().maxTasksPerJob(), base.backfill().coverageSkip(),
+                        base.backfill().coverageRefreshMs()),
                 base.sync(), base.schedule(), base.apiLog(), base.db(), base.strategy());
     }
 }

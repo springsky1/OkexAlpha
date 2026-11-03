@@ -268,7 +268,7 @@ CREATE TABLE IF NOT EXISTS okx_strategy (
     created_at    timestamptz NOT NULL DEFAULT now(),
     updated_at    timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT uq_okx_strategy_name UNIQUE (name),
-    CONSTRAINT ck_okx_strategy_status CHECK (status IN ('DRAFT', 'CANDIDATE', 'PROMOTED', 'ARCHIVED'))
+    CONSTRAINT ck_okx_strategy_status CHECK (status IN ('DRAFT', 'CANDIDATE', 'PROMOTED', 'ARCHIVED', 'STOPPED'))
 );
 
 -- 16. 回测批次（一次提交 = 一个 run，内含若干参数组合）

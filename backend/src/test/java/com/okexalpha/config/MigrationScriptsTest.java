@@ -37,7 +37,8 @@ class MigrationScriptsTest {
                 "006_compress_historical_chunks",
                 "007_strategy_backtest_columns",
                 "008_backtest_result_keys",
-                "009_credential_vault");
+                "009_credential_vault",
+                "010_strategy_status_stopped");
     }
 
     @Test
@@ -105,6 +106,17 @@ class MigrationScriptsTest {
         assertThat(sql).contains("add_compression_policy");
         assertThat(sql).contains("2592000000");
         assertThat(sql).contains("autovacuum_vacuum_scale_factor");
+    }
+
+    @Test
+    void strategyStatusMigrationAllowsStopped() throws Exception {
+        String sql = text("db/migrations/010_strategy_status_stopped.sql").toLowerCase(Locale.ROOT);
+
+        // 订单中心的"停止"要能真正落 STOPPED，所以先丢旧约束再重建（幂等）
+        assertThat(sql).contains("drop constraint if exists ck_okx_strategy_status");
+        assertThat(sql).contains("add constraint ck_okx_strategy_status");
+        assertThat(sql).contains("'stopped'");
+        assertThat(sql).contains("okx_strategy");
     }
 
     @Test

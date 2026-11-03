@@ -71,4 +71,50 @@ class ParamSamplerTest {
         // 止损反比放大后夹在 100 以内（2.5% × 10 倍会爆界，靠上限兜住）
         assertThat(ParamSampler.neighborhood(BASE, new double[] {0.1d}).get(0).stopLossPct()).isEqualTo(100.0d);
     }
+
+    @Test
+    @DisplayName("ranges 为 null 时退回旧的 648 组全网格")
+    void gridWithNullRangesFallbackToBuiltIn() {
+        assertThat(ParamSampler.grid(BASE, null)).isEqualTo(ParamSampler.grid(BASE));
+        assertThat(ParamSampler.grid(BASE, null)).hasSize(ParamSampler.gridSize());
+    }
+
+    @Test
+    @DisplayName("自定义范围：按步长展开、整数维末值补 max、固定维度沿用 base")
+    void gridWithRangesExpandsByStep() {
+        ParamRanges ranges = new ParamRanges(
+                new ParamRanges.Range(3d, 10d, 3d),
+                new ParamRanges.Range(3d, 4d, 1d),
+                new ParamRanges.Range(1.5d, 2.0d, 0.5d),
+                new ParamRanges.Range(1.0d, 1.0d, 0.5d),
+                new ParamRanges.Range(1.0d, 2.0d, 0.5d),
+                new ParamRanges.Range(15d, 25d, 5d),
+                List.of());
+        ranges.validate();
+
+        List<StrategyParams> grid = ParamSampler.grid(BASE, ranges);
+        // 4 杠杆（3,6,9,10）× 2 层数 × 2 间隔 × 1 倍数 × 3 止盈 × 3 止损 × 2 方向
+        assertThat(grid).hasSize(288);
+        assertThat(grid).hasSize(ranges.combos());
+        assertThat(grid.stream().map(StrategyParams::leverage).distinct()).containsExactly(3, 6, 9, 10);
+        assertThat(grid).allSatisfy(p -> {
+            assertThat(p.initialMarginUsd()).isEqualTo(100d);
+            assertThat(p.maxHoldHours()).isEqualTo(48);
+            assertThat(p.feeTaker()).isEqualTo(0.0005d);
+        });
+    }
+
+    @Test
+    @DisplayName("超大范围先截断到展开上限，抽样仍不超过 want")
+    void gridWithRangesTruncatesWhenTooLarge() {
+        ParamRanges ranges = new ParamRanges(
+                new ParamRanges.Range(1d, 125d, 1d), null, null, null, null,
+                new ParamRanges.Range(1d, 100d, 1d), null);
+        ranges.validate();
+
+        assertThat(ranges.combos()).isEqualTo(1_350_000);
+        List<StrategyParams> grid = ParamSampler.grid(BASE, ranges);
+        assertThat(grid).hasSize(ParamRanges.DEFAULT_EXPAND_LIMIT);
+        assertThat(ParamSampler.sample(grid, 400, 20261101L)).hasSize(400);
+    }
 }

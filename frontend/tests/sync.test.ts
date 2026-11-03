@@ -8,7 +8,7 @@ vi.mock('../src/api/client', () => ({
   apiRawGet: vi.fn()
 }))
 
-import { apiPost } from '../src/api/client'
+import { apiGet, apiPost } from '../src/api/client'
 import SyncView from '../src/views/SyncView.vue'
 import { useUiStore } from '../src/stores/ui'
 import {
@@ -28,6 +28,7 @@ import {
 } from '../src/views/sync/sync'
 
 const post = vi.mocked(apiPost)
+const get = vi.mocked(apiGet)
 
 function mountView() {
   const pinia = createPinia()
@@ -52,6 +53,9 @@ const basicBase: BasicSyncInput = {
 
 beforeEach(() => {
   post.mockReset()
+  get.mockReset()
+  /* 增量状态卡片在 onMounted 就会拉一次，默认给 null（不渲染状态格） */
+  get.mockResolvedValue(null)
 })
 
 describe('同步品种（legacy submitSyncInstruments 等价）', () => {
@@ -259,6 +263,128 @@ describe('同步页组件', () => {
     await flushPromises()
     expect(w.find('#sync-instruments-result .result-box.is-err').text()).toBe('同步失败：boom')
     expect(ui.toasts.some((t) => t.msg === '品种同步失败：boom' && t.kind === 'err')).toBe(true)
+    w.unmount()
+  })
+})
+describe('定时增量补数据卡片（GET /api/v1/sync/incremental）', () => {
+  const status = {
+    enabled: true,
+    intervalMs: 300000,
+    lookbackMs: 3600000,
+    lagMs: 60000,
+    bars: ['1m', '5m'],
+    klineTypes: ['CANDLE'],
+    maxInstIds: 20,
+    lastRunAtMs: 1_700_000_000_000,
+    lastNote: '提交 1 个作业（1 个游标推进到 end），播种 0 个游标',
+    lastJobId: 7,
+    cursorCount: 12,
+    cursors: [{ key: 'kline|CANDLE|BTC-USDT-SWAP|1m', lastTsMs: 1_700_000_000_000 }],
+    runningKlineJobs: 1,
+    pendingJobs: 3
+  }
+
+  it('渲染开关 / 间隔 / 最近运行 / 游标数 / RUNNING 作业数', async () => {
+    get.mockResolvedValue(status)
+    const w = mountView()
+    await flushPromises()
+    const card = w.find('#card-sync-incremental')
+    expect(card.exists()).toBe(true)
+    expect(card.find('.card-head h2').text()).toBe('定时增量补数据')
+    expect(card.text()).toContain('已启用')
+    expect(card.text()).toContain('5 分钟')
+    expect(card.text()).toContain('游标数')
+    expect(card.text()).toContain('12')
+    expect(card.text()).toContain('RUNNING 作业数')
+    expect(card.text()).toContain('待推进作业数')
+    expect(w.find('#sync-incremental-pending').text()).toBe('3')
+    expect(w.find('#sync-incremental-note').text()).toContain('提交 1 个作业')
+    expect(get).toHaveBeenCalledWith('/api/v1/sync/incremental')
+    w.unmount()
+  })
+
+  it('关闭时显示「已关闭」', async () => {
+    get.mockResolvedValue({ ...status, enabled: false, intervalMs: 90000, cursorCount: 0, runningKlineJobs: 0 })
+    const w = mountView()
+    await flushPromises()
+    expect(w.find('#card-sync-incremental').text()).toContain('已关闭')
+    expect(w.find('#card-sync-incremental').text()).toContain('1.5 分钟')
+    w.unmount()
+  })
+
+  it('点击「立即补增量」POST 增量补数据路径，成功后 toast 并刷新状态', async () => {
+    get.mockResolvedValue(status)
+    post.mockResolvedValue({
+      submitted: true,
+      jobs: [{ jobId: 7, taskTotal: 2, bar: '1m', klineType: 'CANDLE' }],
+      cursorAdvanced: 2,
+      seeded: 0,
+      note: '提交 1 个作业（2 个游标推进到 end），播种 0 个游标'
+    })
+    const w = mountView()
+    const ui = useUiStore()
+    await flushPromises()
+    await w.find('#sync-incremental-run').trigger('click')
+    await flushPromises()
+    expect(post).toHaveBeenCalledWith('/api/v1/sync/incremental/run', null)
+    expect(w.find('#sync-incremental-result').text()).toContain('增量补数据 完成，耗时')
+    expect(w.find('#sync-incremental-result').text()).toContain('submitted：true')
+    expect(
+      ui.toasts.some(
+        (t) => t.msg === '已提交 1 个增量作业（完成后自动推进水位），本轮对账推进 2 个游标' && t.kind === 'ok'
+      )
+    ).toBe(true)
+    /* 成功后重拉一次状态 */
+    expect(get.mock.calls.length).toBeGreaterThan(1)
+    w.unmount()
+  })
+
+  it('跳过（已有 K 线作业在跑）时 toast 说明原因', async () => {
+    get.mockResolvedValue(status)
+    post.mockResolvedValue({ submitted: false, skippedReason: 'kline-job-running', jobId: 9, jobs: [], seeded: 0, cursorAdvanced: 0, note: '已有 KLINE 作业在跑' })
+    const w = mountView()
+    const ui = useUiStore()
+    await flushPromises()
+    await w.find('#sync-incremental-run').trigger('click')
+    await flushPromises()
+    expect(ui.toasts.some((t) => t.msg === '未提交作业：已有 K 线补拉作业在跑，本轮跳过')).toBe(true)
+    w.unmount()
+  })
+
+  it('只对账推进（无新提交）时 toast 说明推进了几个游标', async () => {
+    get.mockResolvedValue(status)
+    post.mockResolvedValue({ submitted: false, skippedReason: null, jobId: null, jobs: [], seeded: 0, cursorAdvanced: 4, note: '本轮对账推进 4 个游标' })
+    const w = mountView()
+    const ui = useUiStore()
+    await flushPromises()
+    await w.find('#sync-incremental-run').trigger('click')
+    await flushPromises()
+    expect(ui.toasts.some((t) => t.msg === '本轮未提交作业，对账推进 4 个游标')).toBe(true)
+    w.unmount()
+  })
+
+  it('只播种（无缺口）时 toast 说明已播种', async () => {
+    get.mockResolvedValue(status)
+    post.mockResolvedValue({ submitted: false, skippedReason: null, jobId: null, jobs: [], seeded: 3, cursorAdvanced: 0, note: '播种 3 个游标' })
+    const w = mountView()
+    const ui = useUiStore()
+    await flushPromises()
+    await w.find('#sync-incremental-run').trigger('click')
+    await flushPromises()
+    expect(ui.toasts.some((t) => t.msg === '已播种 3 个游标（本轮无缺口，下一轮开始补）')).toBe(true)
+    w.unmount()
+  })
+
+  it('接口失败时显示错误盒并 toast', async () => {
+    get.mockResolvedValue(status)
+    post.mockRejectedValue(new Error('boom'))
+    const w = mountView()
+    const ui = useUiStore()
+    await flushPromises()
+    await w.find('#sync-incremental-run').trigger('click')
+    await flushPromises()
+    expect(w.find('#sync-incremental-result .result-box.is-err').text()).toBe('同步失败：boom')
+    expect(ui.toasts.some((t) => t.msg === '增量补数据失败：boom' && t.kind === 'err')).toBe(true)
     w.unmount()
   })
 })

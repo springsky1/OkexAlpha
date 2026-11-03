@@ -43,6 +43,15 @@ import {
   type BtTrade
 } from '../src/views/strategy-backtest/btLogic'
 import { createBtSession } from '../src/views/strategy-backtest/btSession'
+import {
+  BT_MAX_COMBOS,
+  BT_PRESETS,
+  BT_RANGE_DEFAULT_COMBOS,
+  emptyRangesForm,
+  estimateCombos,
+  rangesFromPreset,
+  rangesToPayload
+} from '../src/views/strategy-backtest/btRanges'
 
 const get = vi.mocked(apiGet)
 const post = vi.mocked(apiPost)
@@ -316,6 +325,86 @@ describe('回测纯逻辑：提交参数校验与组装（等价 legacy submitBa
     expect(new Date(r.end).getTime() - new Date(r.start).getTime()).toBe(7 * 86400000)
   })
 })
+
+describe('回测纯逻辑：参数范围（可选）', () => {
+  it('默认表单不带 ranges，空范围等价内置 648 组网格', () => {
+    const built = btBuildPayload(form())
+    expect(built.ok).toBe(true)
+    if (!built.ok) return
+    expect(built.body.ranges).toBeUndefined()
+    expect(estimateCombos(emptyRangesForm())).toBe(648)
+    expect(rangesToPayload(emptyRangesForm())).toBeNull()
+  })
+
+  it('选保守预设后 body.ranges 六维齐全，双向时省略 sides', () => {
+    const ranges = rangesFromPreset('conservative')
+    const built = btBuildPayload(form({ rangesPreset: 'conservative', ranges }))
+    expect(built.ok).toBe(true)
+    if (!built.ok) return
+    expect(built.body.ranges).toEqual({
+      leverage: { min: 3, max: 5, step: 1 },
+      maxLayers: { min: 3, max: 5, step: 1 },
+      layerStepPct: { min: 1.5, max: 2.5, step: 0.5 },
+      layerScale: { min: 1, max: 1, step: 0.5 },
+      takeProfitPct: { min: 1, max: 2, step: 0.5 },
+      stopLossPct: { min: 15, max: 25, step: 5 }
+    })
+    expect(built.body.ranges?.sides).toBeUndefined()
+    expect(estimateCombos(ranges)).toBe(486)
+    expect(BT_PRESETS.map((p) => p.key)).toEqual(['conservative', 'balanced', 'aggressive'])
+    // 预设返回深拷贝：改表单不会污染常量
+    ranges.leverage.min = '99'
+    expect(rangesFromPreset('conservative').leverage.min).toBe('3')
+  })
+
+  it('只勾一个方向时下发 sides；组合数按维度和方向估算', () => {
+    const ranges = emptyRangesForm()
+    ranges.sides = ['long']
+    ranges.leverage = { min: '3', max: '10', step: '1' }
+    ranges.maxLayers = { min: '5', max: '5', step: '1' }
+    ranges.layerStepPct = { min: '2.5', max: '2.5', step: '0.5' }
+    ranges.layerScale = { min: '1', max: '1', step: '0.5' }
+    ranges.takeProfitPct = { min: '2', max: '2', step: '0.5' }
+    ranges.stopLossPct = { min: '25', max: '25', step: '5' }
+    expect(estimateCombos(ranges)).toBe(8)
+    ranges.sides = ['long', 'short']
+    expect(estimateCombos(ranges)).toBe(16)
+    expect(rangesToPayload(ranges)).toEqual({
+      leverage: { min: 3, max: 10, step: 1 },
+      maxLayers: { min: 5, max: 5, step: 1 },
+      layerStepPct: { min: 2.5, max: 2.5, step: 0.5 },
+      layerScale: { min: 1, max: 1, step: 0.5 },
+      takeProfitPct: { min: 2, max: 2, step: 0.5 },
+      stopLossPct: { min: 25, max: 25, step: 5 }
+    })
+  })
+
+  it('min 大于 max 或维度只填一半时给出维度级中文提示', () => {
+    const ranges = emptyRangesForm()
+    ranges.leverage = { min: '10', max: '3', step: '1' }
+    const built = btBuildPayload(form({ ranges }))
+    expect(built.ok).toBe(false)
+    if (built.ok) return
+    expect(built.message).toContain('杠杆')
+    expect(built.message).toContain('min 不能大于 max')
+    expect(built.box).toBe(false)
+
+    const half = emptyRangesForm()
+    half.stopLossPct = { min: '15', max: '', step: '5' }
+    expect(() => rangesToPayload(half)).toThrowError(/同时填写/)
+
+    const fracLeverage = emptyRangesForm()
+    fracLeverage.leverage = { min: '3', max: '10', step: '0.5' }
+    expect(() => rangesToPayload(fracLeverage)).toThrowError(/整数/)
+  })
+
+  it('预设组合数可超过上限，服务端会截断', () => {
+    const balanced = BT_PRESETS.find((p) => p.key === 'balanced')
+    expect(balanced).toBeTruthy()
+    expect(balanced!.combos).toBeGreaterThan(BT_MAX_COMBOS)
+  })
+})
+
 
 describe('回测纯逻辑：资金曲线几何与摘要', () => {
   const pts: BtEquityPoint[] = [
@@ -599,6 +688,38 @@ describe('回测页面：挂载与幂等', () => {
     expect(wrapper.text()).toContain('结果排行')
     expect(wrapper.text()).toContain('冠军明细')
     expect(wrapper.text()).toContain('资金曲线')
+    wrapper.unmount()
+  })
+
+  it('参数范围区块：选保守预设写入六维并实时估算，点默认清空回家 648 组', async () => {
+    get.mockResolvedValue({ total: 0, items: [] })
+    const wrapper = mount(StrategyBacktestView, { global: { plugins: [pinia()] }, attachTo: document.body })
+    await flushPromises()
+
+    // 默认态：范围区存在、六维输入为空、预计组合数 = 内置 648
+    expect(wrapper.text()).toContain('参数范围（可选）')
+    expect(wrapper.find('#bt-range-leverage-min').exists()).toBe(true)
+    expect((wrapper.find('#bt-range-leverage-min').element as HTMLInputElement).value).toBe('')
+    expect(wrapper.find('.range-estimate').text()).toContain(String(BT_RANGE_DEFAULT_COMBOS))
+
+    // 保守预设：杠杆 3-5 步 1、层数 3-5 步 1、…、止盈 1-2 步 0.5、止损 15-25 步 5
+    const chip = (label: string) => wrapper.findAll('button').find((b) => b.text() === label)!
+    await chip('保守').trigger('click')
+    const value = (id: string) => (wrapper.find('#' + id).element as HTMLInputElement).value
+    expect(value('bt-range-leverage-min')).toBe('3')
+    expect(value('bt-range-leverage-max')).toBe('5')
+    expect(value('bt-range-leverage-step')).toBe('1')
+    expect(value('bt-range-maxLayers-min')).toBe('3')
+    expect(value('bt-range-layerStepPct-min')).toBe('1.5')
+    expect(value('bt-range-layerScale-min')).toBe('1')
+    expect(value('bt-range-takeProfitPct-max')).toBe('2')
+    expect(value('bt-range-stopLossPct-step')).toBe('5')
+    expect(wrapper.find('.range-estimate').text()).toContain('486')
+
+    // 默认 chip：清空六个维度，预计组合数回到 648
+    await chip('默认').trigger('click')
+    expect(value('bt-range-leverage-min')).toBe('')
+    expect(wrapper.find('.range-estimate').text()).toContain(String(BT_RANGE_DEFAULT_COMBOS))
     wrapper.unmount()
   })
 })

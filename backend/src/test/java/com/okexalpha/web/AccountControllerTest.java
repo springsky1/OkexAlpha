@@ -95,6 +95,69 @@ class AccountControllerTest {
         verify(accountService).orders(null, null, null, null);
     }
 
+    // ------------------------------------------------------------ 订单中心
+
+    @Test
+    @DisplayName("positions-history 透传 instType 与 limit")
+    void positionsHistoryPassesArguments() {
+        Map<String, Object> payload = payload("state", "positions-history");
+        given(accountService.positionsHistory("SWAP", 100)).willReturn(payload);
+
+        ApiResponse<Map<String, Object>> response = controller.positionsHistory("SWAP", 100);
+
+        assertThat(response.code()).isEqualTo("0");
+        assertThat(response.data()).isSameAs(payload);
+        verify(accountService).positionsHistory("SWAP", 100);
+    }
+
+    @Test
+    @DisplayName("fills / bills / borrow-repay 各自透传参数")
+    void fillsBillsBorrowRepayPassArguments() {
+        given(accountService.fills(null, null)).willReturn(payload("state", "fills"));
+        given(accountService.bills(100)).willReturn(payload("state", "bills"));
+        given(accountService.borrowRepay(30, "USDT")).willReturn(payload("state", "borrow-repay"));
+
+        assertThat(controller.fills(null, null).data()).isNotNull();
+        assertThat(controller.bills(100).data()).isNotNull();
+        assertThat(controller.borrowRepay(30, "USDT").data()).isNotNull();
+        verify(accountService).fills(null, null);
+        verify(accountService).bills(100);
+        verify(accountService).borrowRepay(30, "USDT");
+    }
+
+    @Test
+    @DisplayName("strategy-center 透传 state/limit/offset")
+    void strategyCenterPassesArguments() {
+        Map<String, Object> payload = payload("state", "all");
+        given(accountService.strategyCenter("all", 50, 0)).willReturn(payload);
+
+        ApiResponse<Map<String, Object>> response = controller.strategyCenter("all", 50, 0);
+
+        assertThat(response.data()).isSameAs(payload);
+        verify(accountService).strategyCenter("all", 50, 0);
+    }
+
+    @Test
+    @DisplayName("POST strategy-center/{id}/status 用请求体里的 status 调 service")
+    void strategyCenterStatusPassesBodyStatus() {
+        Map<String, Object> payload = payload("status", "ARCHIVED");
+        given(accountService.setStrategyStatus(7L, "STOPPED")).willReturn(payload);
+
+        ApiResponse<Map<String, Object>> response = controller.strategyCenterStatus(7L,
+                new AccountController.StatusRequest("STOPPED"));
+
+        assertThat(response.data()).isSameAs(payload);
+        verify(accountService).setStrategyStatus(7L, "STOPPED");
+    }
+
+    @Test
+    @DisplayName("POST strategy-center/{id}/status 缺少请求体时拒绝")
+    void strategyCenterStatusRequiresBody() {
+        org.assertj.core.api.Assertions.assertThatIllegalArgumentException()
+                .isThrownBy(() -> controller.strategyCenterStatus(7L, null))
+                .withMessage("request body is required");
+    }
+
     private static Map<String, Object> payload(String key, Object value) {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put(key, value);

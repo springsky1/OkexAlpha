@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { parseList } from '../lib/format'
 import { NL, TAB } from '../lib/labels'
 import { coinOfInst, useInstStore } from '../stores/inst'
@@ -27,9 +27,34 @@ const panelOpen = ref(false)
 const head = ref('')
 const rows = ref<any[]>([])
 const active = ref(-1)
+/* 多选面板里与当前过滤词匹配的全部 instId（不受 maxRows 截断，供全选/反选使用） */
+const matchedIds = ref<string[]>([])
 let blurTimer: ReturnType<typeof setTimeout> | null = null
 
 const value = () => props.modelValue || ''
+
+/* 已选中的合法 instId；品种库未加载时按原始逗号串理解 */
+function pickedTokens(): string[] {
+  const toks = parseList(value(), NL, TAB)
+  return inst.loaded ? toks.filter((t) => inst.hasId(t)) : toks
+}
+
+const selectedCount = computed(() => (props.multiple ? pickedTokens().length : 0))
+/* 已选集合（随 modelValue 缓存，避免每行重复解析逗号串） */
+const pickedMap = computed<Record<string, boolean>>(() => {
+  const map: Record<string, boolean> = {}
+  const list = pickedTokens()
+  for (let i = 0; i < list.length; i++) map[list[i]] = true
+  return map
+})
+
+function isPicked(id: string): boolean {
+  return !!pickedMap.value[id]
+}
+
+function setTokens(list: string[]) {
+  emit('update:modelValue', list.join(', '))
+}
 
 /* 多选时只看最后一个逗号后的输入作为过滤词 */
 function queryOf(): string {
@@ -50,23 +75,26 @@ async function markActive() {
 }
 
 function refresh() {
-  const picked = props.multiple ? parseList(value(), NL, TAB) : []
   let q = queryOf()
   /* 框里已经是一个完整 instId（刚选中/初始值）时不当作过滤词，直接列全部候选 */
   if (q && inst.hasId(q)) q = ''
   const pool = inst.list.filter(allowed)
   const next: any[] = []
+  const matchedList: string[] = []
   let matched = 0
   for (let i = 0; i < pool.length; i++) {
     const it = pool[i]
     if (!it || !it.instId) continue
-    if (picked.indexOf(it.instId) >= 0) continue
+    /* 单选模式把已选项从候选里剔除；多选用 checkbox 常驻展示，勾选态由 isPicked 决定 */
+    if (!props.multiple && isPicked(it.instId)) continue
     const id = String(it.instId).toUpperCase()
     const coin = coinOfInst(it.instId).toUpperCase()
     if (q && id.indexOf(q) < 0 && coin.indexOf(q) < 0) continue
     matched++
+    matchedList.push(it.instId)
     if (next.length < props.maxRows) next.push(it)
   }
+  matchedIds.value = matchedList
   rows.value = next
   active.value = next.length ? 0 : -1
   if (!inst.list.length) {
@@ -86,20 +114,55 @@ function close() {
   active.value = -1
 }
 
+/* 多选：勾选/取消一个 instId（只保留合法 instId，丢掉刚打的过滤片段） */
+function toggle(it: any) {
+  if (!it || !it.instId) return
+  const tokens = pickedTokens()
+  const i = tokens.indexOf(it.instId)
+  if (i >= 0) tokens.splice(i, 1)
+  else tokens.push(it.instId)
+  setTokens(tokens)
+  refresh()
+}
+
 function apply(it: any) {
   if (!it) return
   if (!props.multiple) {
     emit('update:modelValue', it.instId)
-  } else {
-    /* 只保留已存在的合法 instId，丢掉刚打的过滤片段，避免把 "BTC" 这类半截词当成合约 */
-    let tokens = parseList(value(), NL, TAB)
-    if (inst.loaded) tokens = tokens.filter((t) => inst.hasId(t))
-    if (tokens.indexOf(it.instId) < 0) tokens.push(it.instId)
-    emit('update:modelValue', tokens.join(', '))
+    close()
+    return
   }
   /* 多选模式保持面板打开，便于连续挑多个 */
-  if (props.multiple) refresh()
-  else close()
+  toggle(it)
+}
+
+/* 全选当前过滤结果（含被 maxRows 截断、未渲染的候选） */
+function selectAll() {
+  const tokens = pickedTokens()
+  for (let i = 0; i < matchedIds.value.length; i++) {
+    const id = matchedIds.value[i]
+    if (tokens.indexOf(id) < 0) tokens.push(id)
+  }
+  setTokens(tokens)
+  refresh()
+}
+
+/* 反选当前过滤结果 */
+function invertAll() {
+  const tokens = pickedTokens()
+  for (let i = 0; i < matchedIds.value.length; i++) {
+    const id = matchedIds.value[i]
+    const at = tokens.indexOf(id)
+    if (at >= 0) tokens.splice(at, 1)
+    else tokens.push(id)
+  }
+  setTokens(tokens)
+  refresh()
+}
+
+function clearAll() {
+  setTokens([])
+  refresh()
 }
 
 async function open() {
@@ -224,6 +287,12 @@ onBeforeUnmount(() => {
     <button class="inst-caret" type="button" tabindex="-1" aria-label="展开 instId 候选" @mousedown="onPanelMousedown" @click="toggleCaret">▾</button>
     <div v-if="panelOpen" class="inst-panel" @mousedown="onPanelMousedown">
       <div class="inst-panel-head">{{ head }}</div>
+      <div v-if="multiple" class="inst-bulk">
+        <span class="inst-bulk-count">已选 {{ selectedCount }} 个</span>
+        <button type="button" class="inst-bulk-btn" @click="selectAll">全选</button>
+        <button type="button" class="inst-bulk-btn" @click="invertAll">反选</button>
+        <button type="button" class="inst-bulk-btn" @click="clearAll">清空</button>
+      </div>
       <div class="inst-panel-list" role="listbox">
         <div v-if="!inst.list.length" class="inst-empty">库内还没有品种数据，请先到「同步」页执行 POST /api/v1/sync/instruments</div>
         <div v-else-if="!rows.length" class="inst-empty">没有匹配的 instId</div>
@@ -233,11 +302,13 @@ onBeforeUnmount(() => {
           type="button"
           class="inst-opt"
           role="option"
-          :class="{ 'is-active': i === active }"
+          :aria-selected="multiple ? isPicked(it.instId) : i === active"
+          :class="{ 'is-active': i === active, 'is-checked': multiple && isPicked(it.instId) }"
           @mousedown="onOptionMousedown"
           @mouseenter="active = i"
           @click="apply(it)"
         >
+          <span v-if="multiple" class="inst-check" :class="{ 'is-on': isPicked(it.instId) }" aria-hidden="true">{{ isPicked(it.instId) ? '✓' : '' }}</span>
           <span class="inst-opt-id">{{ it.instId }}</span>
           <span class="inst-opt-meta">{{ coinOfInst(it.instId) }} · {{ it.instType || '' }}{{ it.state ? ' · ' + it.state : '' }}</span>
         </button>

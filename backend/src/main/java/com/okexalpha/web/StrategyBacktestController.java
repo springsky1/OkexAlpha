@@ -1,5 +1,6 @@
 package com.okexalpha.web;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -14,9 +15,11 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.okexalpha.config.OkxProperties;
 import com.okexalpha.domain.BacktestResultRow;
 import com.okexalpha.domain.BacktestRunRow;
 import com.okexalpha.service.strategy.BacktestService;
+import com.okexalpha.strategy.engine.ParamPresets;
 import com.okexalpha.web.dto.ApiResponse;
 import com.okexalpha.web.dto.BacktestRequest;
 import com.okexalpha.web.dto.PageArgs;
@@ -27,6 +30,7 @@ import com.okexalpha.web.dto.PageArgs;
  * <ul>
  *   <li>POST /backtests                       提交批次（202）</li>
  *   <li>GET  /backtests                       批次列表</li>
+ *   <li>GET  /backtests/presets               参数范围预设（保守/均衡/激进）与上限</li>
  *   <li>GET  /backtests/{id}                  批次详情（含 Top 结果与冠军）</li>
  *   <li>GET  /backtests/{id}/results          参数组合排行</li>
  *   <li>GET  /backtests/{id}/results/{rid}/coins  某组合的逐币明细</li>
@@ -41,15 +45,18 @@ import com.okexalpha.web.dto.PageArgs;
 public class StrategyBacktestController {
 
     private final BacktestService backtestService;
+    private final OkxProperties properties;
 
-    public StrategyBacktestController(BacktestService backtestService) {
+    public StrategyBacktestController(BacktestService backtestService, OkxProperties properties) {
         this.backtestService = backtestService;
+        this.properties = properties;
     }
 
     @PostMapping
     public ResponseEntity<ApiResponse<Map<String, Object>>> submit(@RequestBody(required = false) BacktestRequest request) {
         long runId = backtestService.submit(request == null
-                ? new BacktestRequest(null, null, null, null, null, null, null, null, null, null, null, null, null)
+                ? new BacktestRequest(null, null, null, null, null, null, null, null, null, null, null, null, null,
+                        null)
                 : request);
         BacktestRunRow run = backtestService.detail(runId).get("run") instanceof BacktestRunRow row ? row : null;
         Map<String, Object> body = new LinkedHashMap<>();
@@ -65,6 +72,33 @@ public class StrategyBacktestController {
             @RequestParam(required = false) Integer offset) {
         PageArgs page = PageArgs.of(limit, offset, 20, 200);
         return ApiResponse.ok(backtestService.runs(page.limit(), page.offset()));
+    }
+
+    /**
+     * 参数范围预设目录，附当前上限：前端 chips 与提交前的组合数提示都基于这份数据。
+     *
+     * <p>注意：预设组合数只按 6 个维度精确计算，可能大于 maxCombos；
+     * 提交时会按 maxCombos 抽样截断，并在批次 requestJson 里标记 rangeTruncated=true。</p>
+     */
+    @GetMapping("/presets")
+    public ApiResponse<Map<String, Object>> presets() {
+        List<Map<String, Object>> presets = new ArrayList<>();
+        for (ParamPresets preset : ParamPresets.catalog()) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("key", preset.key());
+            item.put("label", preset.label());
+            item.put("note", preset.note());
+            item.put("ranges", preset.ranges());
+            item.put("combos", preset.combos());
+            presets.add(item);
+        }
+        Map<String, Object> limits = new LinkedHashMap<>();
+        limits.put("maxCombos", properties.strategy().backtest().maxCombos());
+        limits.put("defaultSampleSize", properties.strategy().backtest().defaultSampleSize());
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("presets", presets);
+        body.put("limits", limits);
+        return ApiResponse.ok(body);
     }
 
     @GetMapping("/{id}")

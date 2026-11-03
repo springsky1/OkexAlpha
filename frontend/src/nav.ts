@@ -1,4 +1,4 @@
-/* 导航注册表：与 legacy index.html 的 15 个 hash 页面 / 3 个分组完全一致。
+/* 导航注册表：16 个 hash 页面 / 3 个分组（含 Vue 新增的 order-center），与路由表保持同步。
    migrated=true 的页面走 Vue 组件；false 的页面用 iframe 挂 /legacy/（过渡期双轨）。 */
 
 export interface NavEntry {
@@ -39,6 +39,7 @@ export const NAV_GROUPS: { key: string; label: string; items: NavEntry[] }[] = [
     items: [
       { route: 'account', label: '账户概览', title: '账户概览', desc: 'OKX 只读账户信息：凭证脱敏展示、账户模式、余额明细与交易所持仓。本页只调用只读接口，不会下单 / 撤单 / 划转。' },
       { route: 'orders', label: '我的订单', title: '我的订单', desc: '交易所订单查询与状态。' },
+      { route: 'order-center', label: '订单中心', title: '订单中心', desc: '类似 OKX 的订单中心：当前委托 / 历史委托 / 历史仓位 / 交易账单 / 策略 / 借币数据 / 资金账单，策略页可停止运行中的影子策略。' },
       { route: 'strategies', label: '马丁策略', title: '马丁策略', desc: '策略实例管理与参数。' }
     ]
   }
@@ -73,6 +74,7 @@ export const MIGRATED_ROUTES: string[] = [
   'live',
   'account',
   'orders',
+  'order-center',
   'strategies'
 ]
 

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 /* 同步页（legacy data-page="sync" 1:1 移植）：两个同步阻塞调用 + 二次确认 + 等待框 + 结果框 */
-import { onBeforeUnmount, reactive, ref } from 'vue'
-import { apiPost } from '../api/client'
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { apiGet, apiPost } from '../api/client'
 import { EP } from '../api/endpoints'
+import { fmtInt, fmtTime } from '../lib/format'
 import { INST_TYPES } from '../lib/labels'
 import { useUiStore } from '../stores/ui'
 import {
@@ -77,6 +78,122 @@ const basic = useSyncSlot()
 
 const busyInst = ref(false)
 const busyBasic = ref(false)
+
+/* ---- 卡片 3：定时增量补数据（GET /api/v1/sync/incremental + POST .../run） ---- */
+interface IncrementalCursor {
+  key?: string
+  lastTsMs?: number
+}
+
+interface IncrementalStatus {
+  enabled?: boolean
+  intervalMs?: number
+  lookbackMs?: number
+  lagMs?: number
+  bars?: string[]
+  klineTypes?: string[]
+  maxInstIds?: number
+  lastRunAtMs?: number | null
+  lastNote?: string
+  lastJobId?: number | null
+  cursorCount?: number
+  cursors?: IncrementalCursor[]
+  runningKlineJobs?: number
+  /* 已提交、等作业 DONE 后才推进水位的登记数 */
+  pendingJobs?: number
+}
+
+interface IncrementalJob {
+  jobId?: number
+  taskTotal?: number
+  bar?: string
+  klineType?: string
+}
+
+interface IncrementalRunResult {
+  submitted?: boolean
+  skippedReason?: string | null
+  jobId?: number | null
+  jobs?: IncrementalJob[]
+  cursorAdvanced?: number
+  seeded?: number
+  note?: string
+}
+
+/* 后端 skippedReason 的中文说明（未列举的码原样回显） */
+const SKIP_LABELS: Record<string, string> = {
+  disabled: '增量补数据已关闭（okx.sync.incremental.enabled=false）',
+  running: '上一轮增量补数据还在执行',
+  'kline-job-running': '已有 K 线补拉作业在跑，本轮跳过',
+  'no-instruments': '库内没有 live SWAP 品种'
+}
+
+const incrStatus = ref<IncrementalStatus | null>(null)
+const incrStatusError = ref('')
+const busyIncr = ref(false)
+const incr = useSyncSlot()
+
+function intervalText(ms: unknown): string {
+  const n = Number(ms)
+  if (!isFinite(n) || n <= 0) return '-'
+  if (n < 60_000) return Math.round(n / 1000) + ' 秒'
+  const minutes = n / 60_000
+  return (minutes % 1 === 0 ? String(minutes) : minutes.toFixed(1)) + ' 分钟'
+}
+
+function runResultText(data: IncrementalRunResult | null | undefined): string {
+  if (!data) return '增量补数据完成'
+  if (data.submitted) {
+    const count = Array.isArray(data.jobs) ? data.jobs.length : 0
+    /* 提交只是入队：水位要等作业 DONE 后由下一轮对账推进 */
+    const reconcileTail = data.cursorAdvanced ? '，本轮对账推进 ' + fmtInt(data.cursorAdvanced) + ' 个游标' : ''
+    return '已提交 ' + count + ' 个增量作业（完成后自动推进水位）' + reconcileTail
+  }
+  const reason = data.skippedReason || ''
+  if (!reason && data.seeded) {
+    return '已播种 ' + fmtInt(data.seeded) + ' 个游标（本轮无缺口，下一轮开始补）'
+  }
+  if (!reason && data.cursorAdvanced) {
+    return '本轮未提交作业，对账推进 ' + fmtInt(data.cursorAdvanced) + ' 个游标'
+  }
+  const label = SKIP_LABELS[reason] || (reason ? '本轮跳过（' + reason + '）' : '本轮跳过')
+  return '未提交作业：' + label
+}
+
+/* silent=true 时不弹错误 toast（首次进入 / 手动触发后的刷新） */
+async function loadIncremental(silent: boolean): Promise<void> {
+  try {
+    const data = await apiGet<IncrementalStatus | null>(EP.syncIncremental)
+    incrStatus.value = data && typeof data === 'object' ? data : null
+    incrStatusError.value = ''
+  } catch (err: unknown) {
+    incrStatusError.value = messageOf(err)
+    if (!silent) ui.toast('加载增量状态失败：' + messageOf(err), 'err')
+  }
+}
+
+async function runIncremental(): Promise<void> {
+  if (busyIncr.value) return
+  busyIncr.value = true
+  incr.begin('增量补数据')
+  try {
+    const data = await apiPost<IncrementalRunResult>(EP.syncIncrementalRun, null)
+    incr.done('增量补数据', data)
+    ui.toast(runResultText(data), data && data.submitted ? 'ok' : 'info')
+    ui.touchRefresh()
+    void loadIncremental(true)
+  } catch (err: unknown) {
+    const msg = messageOf(err)
+    incr.fail(msg)
+    ui.toast('增量补数据失败：' + msg, 'err')
+  } finally {
+    busyIncr.value = false
+  }
+}
+
+onMounted(() => {
+  void loadIncremental(true)
+})
 
 /* ---- 表单 1：同步品种 ---- */
 const instTypes = ref<string[]>([...SYNC_INST_TYPES])
@@ -288,5 +405,43 @@ async function submitBasic(): Promise<void> {
         <div v-else-if="basic.state.kind === 'ok' || basic.state.kind === 'err'" v-html="basic.state.html"></div>
       </div>
     </form>
+
+    <div class="card" id="card-sync-incremental">
+      <div class="card-head">
+        <h2>定时增量补数据</h2>
+        <span class="muted">GET /api/v1/sync/incremental · POST /api/v1/sync/incremental/run</span>
+      </div>
+      <div v-if="incrStatus" class="kv-grid" id="sync-incremental-status">
+        <div class="kv"><span class="kv-key">开关</span><span class="kv-val">{{ incrStatus.enabled ? '已启用' : '已关闭' }}</span></div>
+        <div class="kv"><span class="kv-key">间隔</span><span class="kv-val">{{ intervalText(incrStatus.intervalMs) }}</span></div>
+        <div class="kv"><span class="kv-key">最近运行</span><span class="kv-val">{{ fmtTime(incrStatus.lastRunAtMs) }}</span></div>
+        <div class="kv"><span class="kv-key">游标数</span><span class="kv-val">{{ fmtInt(incrStatus.cursorCount) }}</span></div>
+        <div class="kv"><span class="kv-key">RUNNING 作业数</span><span class="kv-val">{{ fmtInt(incrStatus.runningKlineJobs) }}</span></div>
+        <div class="kv"><span class="kv-key">待推进作业数</span><span class="kv-val" id="sync-incremental-pending">{{ fmtInt(incrStatus.pendingJobs) }}</span></div>
+      </div>
+      <p v-else class="hint" id="sync-incremental-empty">
+        {{ incrStatusError ? '加载增量状态失败：' + incrStatusError : '加载增量状态…' }}
+      </p>
+      <p v-if="incrStatus && incrStatus.lastNote" class="hint" id="sync-incremental-note">最近结果：{{ incrStatus.lastNote }}</p>
+      <p class="hint">
+        按 okx_sync_cursor 里 kline|klineType|instId|bar 的水位，把 K 线补到 now - lag；已有 K 线补拉作业在跑时本轮跳过。
+        水位只在作业跑成功后推进（失败/取消会按旧水位重提，不会静默丢数据）。
+        开关 / 间隔 / 回看窗口在 application.yml 的 okx.sync.incremental 下配置。
+      </p>
+      <div class="form-actions">
+        <div class="quick-group"><span class="hint">手动触发与定时任务共用同一套防重入与跳过规则。</span></div>
+        <div class="btn-group">
+          <button class="btn btn-primary" type="button" id="sync-incremental-run" :disabled="busyIncr" @click="runIncremental">
+            {{ busyIncr ? '补数据中…' : '立即补增量' }}
+          </button>
+        </div>
+      </div>
+      <div class="result-slot" id="sync-incremental-result">
+        <div v-if="incr.state.kind === 'wait'" class="result-box">
+          <span class="spinner"></span> {{ incr.state.title }}正在执行，已耗时 <strong>{{ incr.state.seconds }} 秒</strong>
+        </div>
+        <div v-else-if="incr.state.kind === 'ok' || incr.state.kind === 'err'" v-html="incr.state.html"></div>
+      </div>
+    </div>
   </section>
 </template>

@@ -19,6 +19,7 @@ const VIEW_LOADERS: Record<string, () => Promise<unknown>> = {
   live: () => import('../views/LiveView.vue'),
   account: () => import('../views/AccountView.vue'),
   orders: () => import('../views/OrdersView.vue'),
+  'order-center': () => import('../views/OrderCenterView.vue'),
   strategies: () => import('../views/StrategiesView.vue')
 }
 

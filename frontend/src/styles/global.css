@@ -371,6 +371,31 @@ textarea { resize: vertical; min-height: 38px; font-family: var(--mono); font-si
 .inst-opt-id { font-family: var(--mono); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .inst-opt-meta { margin-left: auto; padding-left: 10px; font-size: 11px; color: var(--muted); white-space: nowrap; }
 .inst-empty { padding: 10px; font-size: 12px; color: var(--muted); text-align: center; }
+/* 多选：批量操作条 + 勾选框 */
+.inst-bulk {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 9px;
+  background: var(--panel-alt);
+  border-bottom: 1px solid var(--border);
+}
+.inst-bulk-count { margin-right: auto; font-size: 11.5px; color: var(--text-soft); }
+.inst-bulk-btn {
+  padding: 2px 8px;
+  border: 1px solid var(--border-strong); border-radius: 4px;
+  background: var(--panel); color: var(--text-soft);
+  font-family: inherit; font-size: 11.5px; line-height: 1.6; cursor: pointer;
+}
+.inst-bulk-btn:hover { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }
+.inst-check {
+  flex: 0 0 auto;
+  width: 14px; height: 14px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border-strong); border-radius: 3px;
+  background: var(--panel); color: #fff;
+  font-size: 10px; line-height: 1;
+}
+.inst-check.is-on { border-color: var(--brand); background: var(--brand); }
+.inst-opt.is-checked .inst-opt-id { font-weight: 500; }
 
 .form-actions {
   display: flex;

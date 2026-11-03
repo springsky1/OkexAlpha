@@ -35,7 +35,18 @@ public record OkxProperties(
             int globalPer2s) {
     }
 
-    public record Backfill(int workerThreads, int queueCapacity, int pageLimit, boolean autoResume, int maxTasksPerJob) {
+    /**
+     * @param workerThreads     单 job 内并发执行的 task 数（也是 job 派发线程池大小）
+     * @param queueCapacity     派发队列容量
+     * @param pageLimit         每页行数（也是单次上游请求的行数上限）
+     * @param autoResume        重启后自动恢复未完成的 job
+     * @param maxTasksPerJob    单 job 最多 task 数
+     * @param coverageSkip      补拉前先查库内覆盖率，只拉缺失区间；关闭后恢复整段重拉（写入仍幂等，只是白费上游配额）
+     * @param coverageRefreshMs 尾部强制重拉 horizon：请求窗口末端距 now 不超过该值时，连同最年轻的已落库 K 线
+     *                          一起重拉（OKX 的 K 线要过一会儿才 confirm，值会变）；0 = 只补缺口
+     */
+    public record Backfill(int workerThreads, int queueCapacity, int pageLimit, boolean autoResume,
+            int maxTasksPerJob, boolean coverageSkip, long coverageRefreshMs) {
     }
 
     public record Sync(boolean includeOptions) {
@@ -117,7 +128,7 @@ public record OkxProperties(
                 "https://www.okx.com", 10000, 20000, "OkexAlpha/0.1 (+https://github.com/springsky1/OkexAlpha)",
                 new Retry(3, 500),
                 new RateLimit(true, 16, 16, 8, 4, 30),
-                new Backfill(8, 64, 300, true, 5000),
+                new Backfill(8, 64, 300, true, 5000, true, 86_400_000L),
                 new Sync(true),
                 new Schedule(false),
                 new ApiLog(true),

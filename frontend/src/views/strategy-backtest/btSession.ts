@@ -24,6 +24,7 @@ import {
   type BtSubmitFormState,
   type BtTrade
 } from './btLogic'
+import { emptyRangesForm } from './btRanges'
 
 export function btErrText(err: unknown): string {
   if (err instanceof ApiError) return err.message
@@ -85,7 +86,10 @@ export interface BtSession {
 }
 
 export function newBtForm(): BtSubmitFormState {
-  return Object.assign({}, BT_FORM_DEFAULTS)
+  const next = Object.assign({}, BT_FORM_DEFAULTS)
+  // ranges 是嵌套对象：浅拷贝会与 BT_FORM_DEFAULTS 共享，必须换成独立实例
+  next.ranges = emptyRangesForm()
+  return next
 }
 
 export function createBtSession(): BtSession {

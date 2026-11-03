@@ -53,6 +53,14 @@ public final class ParamSampler {
         return List.copyOf(out);
     }
 
+    /** 按自定义范围展开；ranges 为 null 时退回内置全网格（648 组），保持旧行为。 */
+    public static List<StrategyParams> grid(StrategyParams base, ParamRanges ranges) {
+        if (ranges == null) {
+            return grid(base);
+        }
+        return ranges.expand(base);
+    }
+
     /** 用固定种子洗牌后取前 max 个，保证同一 seed 结果可复现。 */
     public static List<StrategyParams> sample(List<StrategyParams> all, int max, long seed) {
         if (max <= 0 || all.size() <= max) {

@@ -7,6 +7,7 @@ import { useUiStore } from '../stores/ui'
 import { usePolling } from '../composables/usePolling'
 import DataTable from '../components/DataTable.vue'
 import StateBlock from '../components/StateBlock.vue'
+import CopyOpenDialog from './shadow/CopyOpenDialog.vue'
 import {
   SHADOW_ORDER_LIMIT,
   SHADOW_PF_LIMIT,
@@ -35,6 +36,7 @@ const refreshing = ref(false)
 const ticking = ref(false)
 const error = ref('')
 const refreshAt = ref('')
+const copyOpen = ref(false)
 
 /* 引擎状态 */
 const status = ref<any>(null)
@@ -249,6 +251,18 @@ async function closePosition(id: number): Promise<void> {
   await loadAll(false)
 }
 
+/* 复制开仓：弹窗把一笔真实开仓复制进影子账本，成功后刷新持仓与订单 */
+async function onCopyOpened(res: any): Promise<void> {
+  const pos = res && res.position ? res.position : {}
+  const dir = pos.side === 'short' ? '做空' : '做多'
+  ui.toast(
+    '已复制开仓：' + (pos.instId || '') + ' ' + dir + ' ' + fmtNum(pos.sz) + ' 张 @ ' + fmtNum(pos.entryPx) +
+      '（orderId=' + fmtInt(res && res.orderId) + '，仅影子账本）',
+    'ok'
+  )
+  await Promise.all([loadPositions(false), loadOrders(false)])
+}
+
 /* 平仓按钮走事件委托（表格是 v-html 渲染的） */
 function onSectionClick(e: MouseEvent): void {
   const target = e.target as Element | null
@@ -332,6 +346,7 @@ onMounted(() => {
       <div class="card-head">
         <h2>影子持仓</h2>
         <span class="muted">{{ posMeta }}</span>
+        <button class="btn btn-sm" type="button" data-action="copy-open" @click="copyOpen = true">复制开仓</button>
       </div>
       <div class="table-wrap">
         <StateBlock v-if="posLoading && !posRows.length" kind="loading" text="加载中…" />
@@ -383,5 +398,7 @@ onMounted(() => {
         <DataTable v-else :cols="hlCols" :rows="latestHealth" empty-text="暂无数据" />
       </div>
     </div>
+
+    <CopyOpenDialog :open="copyOpen" @close="copyOpen = false" @opened="onCopyOpened" />
   </section>
 </template>

@@ -34,7 +34,10 @@ import com.okexalpha.domain.KlineType;
 import com.okexalpha.repository.KlineRepository;
 import com.okexalpha.support.BackfillControls;
 
-/** KlineTaskHandler：after 游标向前翻页、重复 ts 时游标递减、空页收敛。 */
+/**
+ * KlineTaskHandler：after 游标向前翻页、重复 ts 时游标递减、空页收敛；
+ * 以及按库内覆盖率只拉缺失段（段顶 + 1、从新到旧、有缺口时保守整段）。
+ */
 class KlinePaginationTest {
 
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
@@ -45,7 +48,9 @@ class KlinePaginationTest {
     private OkxApiClient client;
     private KlineRepository repository;
     private KlineTaskHandler handler;
+    private BackfillPageWriter pageWriter;
     private final List<Long> cursors = new ArrayList<>();
+    private final List<Long> afters = new ArrayList<>();
     private final List<Integer> pageCounts = new ArrayList<>();
     private final List<Boolean> truncationFlags = new ArrayList<>();
 
@@ -53,7 +58,7 @@ class KlinePaginationTest {
     void setUp() {
         client = mock(OkxApiClient.class);
         repository = mock(KlineRepository.class);
-        BackfillPageWriter pageWriter = mock(BackfillPageWriter.class);
+        pageWriter = mock(BackfillPageWriter.class);
         doAnswer(invocation -> {
             cursors.add(invocation.getArgument(2));
             pageCounts.add(invocation.getArgument(3));
@@ -61,9 +66,21 @@ class KlinePaginationTest {
             invocation.<Runnable>getArgument(1).run();
             return null;
         }).when(pageWriter).write(anyLong(), any(Runnable.class), any(), anyInt(), anyLong(), anyBoolean());
+        // 默认库内没数据 → 覆盖率规划退化成整段，与优化前行为一致
+        when(repository.coverage(anyString(), anyString(), anyString(), anyLong(), anyLong()))
+                .thenReturn(new KlineRepository.Coverage(null, null, 0L));
 
         OkxProperties properties = OkxProperties.defaults();
         handler = new KlineTaskHandler(client, properties, repository, new PageBatcher(pageWriter, properties), MAPPER);
+    }
+
+    /** 用指定 backfill 配置造一个 handler（复用同一批 mock）。 */
+    private KlineTaskHandler handlerWith(OkxProperties.Backfill backfill) {
+        OkxProperties base = OkxProperties.defaults();
+        OkxProperties properties = new OkxProperties(base.baseUrl(), base.connectTimeoutMs(), base.readTimeoutMs(),
+                base.userAgent(), base.retry(), base.rateLimit(), backfill, base.sync(), base.schedule(),
+                base.apiLog(), base.db(), base.strategy());
+        return new KlineTaskHandler(client, properties, repository, new PageBatcher(pageWriter, properties), MAPPER);
     }
 
     private static JsonNode candle(long tsMs) {
@@ -82,6 +99,7 @@ class KlinePaginationTest {
         AtomicInteger call = new AtomicInteger();
         when(client.getCandles(any(KlineType.class), anyString(), anyString(), any(), isNull(), anyInt()))
                 .thenAnswer(invocation -> {
+                    afters.add(invocation.getArgument(3));
                     int index = call.getAndIncrement();
                     return index < pages.length ? pages[index] : List.<JsonNode>of();
                 });
@@ -115,10 +133,12 @@ class KlinePaginationTest {
 
         TaskOutcome outcome = handler.execute(task(start, END, null), BackfillControls.running(11L));
 
-        assertThat(calls.get()).isEqualTo(3);
-        assertThat(outcome.rowsWritten()).isEqualTo(3L);
+        // 段顶游标是 toMs + 1（OKX 的 after 是排他上界，见 KlineTaskHandler），
+        // 起始游标比段顶高 1ms，所以要多翻一页才收敛到 start。
+        assertThat(calls.get()).isEqualTo(4);
+        assertThat(outcome.rowsWritten()).isEqualTo(4L);
         assertThat(cursors).containsExactly(start);
-        assertThat(pageCounts).containsExactly(3);
+        assertThat(pageCounts).containsExactly(4);
     }
 
     @Test
@@ -181,6 +201,77 @@ class KlinePaginationTest {
         assertThat(cursors).containsExactly(END - 5 * HOUR, END - 6 * HOUR);
         assertThat(pageCounts).containsExactly(5, 6);
         verify(repository, times(6)).upsertAll(anyList());
+    }
+
+    @Test
+    void coverageFullyCoveredSkipsUpstream() {
+        // 库内 START..END 每根都有，窗口末端又早已确认 → 一次上游请求都不发
+        when(repository.coverage(anyString(), anyString(), anyString(), anyLong(), anyLong()))
+                .thenReturn(new KlineRepository.Coverage(START, END, 7L));
+
+        TaskOutcome outcome = handler.execute(task(START, END, null), BackfillControls.running(11L));
+
+        assertThat(outcome.rowsWritten()).isZero();
+        assertThat(outcome.note()).isNull();
+        assertThat(cursors).isEmpty();
+        verify(client, never()).getCandles(any(), anyString(), anyString(), any(), any(), anyInt());
+        verify(repository, never()).upsertAll(anyList());
+    }
+
+    @Test
+    void coverageMissingEdgesFetchesOnlyThoseSegments() {
+        // 库内 [START+2h, END-2h] 连续五根：只缺左右两段，且按从新到旧拉
+        when(repository.coverage(anyString(), anyString(), anyString(), anyLong(), anyLong()))
+                .thenReturn(new KlineRepository.Coverage(START + 2 * HOUR, END - 2 * HOUR, 5L));
+        stubPages(List.of(candle(END), candle(END - HOUR)), List.of(candle(START + HOUR), candle(START)));
+
+        TaskOutcome outcome = handler.execute(task(START, END, null), BackfillControls.running(11L));
+
+        assertThat(outcome.rowsWritten()).isEqualTo(4L);
+        // 两段各自从「段顶 + 1」起翻（左缘段顶 = START + 1h），游标不串段
+        assertThat(afters).containsExactly(END + 1, START + HOUR + 1);
+        assertThat(cursors).containsExactly(START);
+        verify(repository, times(2)).upsertAll(anyList());
+    }
+
+    @Test
+    void coverageInteriorGapFallsBackToFullRange() {
+        // 中间缺一根 → 保守整段重拉，绝不跳过缺口
+        when(repository.coverage(anyString(), anyString(), anyString(), anyLong(), anyLong()))
+                .thenReturn(new KlineRepository.Coverage(START, END, 6L));
+        stubPages(List.of(candle(END - HOUR)));
+
+        TaskOutcome outcome = handler.execute(task(START, END, null), BackfillControls.running(11L));
+
+        assertThat(outcome.rowsWritten()).isEqualTo(1L);
+        assertThat(afters).containsExactly(END + 1, END - HOUR);
+    }
+
+    @Test
+    void coverageDisabledKeepsLegacySinglePass() {
+        KlineTaskHandler legacy = handlerWith(new OkxProperties.Backfill(8, 64, 300, true, 5000, false, 0L));
+        // 即使库内已全覆盖，关掉 coverage-skip 后仍从 endMs 整段重拉（legacy 语义）
+        stubPages(List.of(candle(END - HOUR), candle(END - 2 * HOUR)));
+
+        TaskOutcome outcome = legacy.execute(task(START, END, null), BackfillControls.running(11L));
+
+        assertThat(outcome.rowsWritten()).isEqualTo(2L);
+        assertThat(afters).containsExactly(END, END - 2 * HOUR);
+        verify(repository, never()).coverage(anyString(), anyString(), anyString(), anyLong(), anyLong());
+    }
+
+    @Test
+    void segmentTopBarIsFetched() {
+        // 只缺右缘 [END, END]：段顶那一根必须取到。OKX 的 after 是排他上界（返回 ts < after），
+        // 所以游标必须取「段顶 + 1」；用 after = 段顶会让这一根永远取不到、每次都留下同一个缺口。
+        when(repository.coverage(anyString(), anyString(), anyString(), anyLong(), anyLong()))
+                .thenReturn(new KlineRepository.Coverage(START, END - HOUR, 7L));
+        stubPages(List.of(candle(END)));
+
+        TaskOutcome outcome = handler.execute(task(START, END, null), BackfillControls.running(11L));
+
+        assertThat(outcome.rowsWritten()).isEqualTo(1L);
+        assertThat(afters).containsExactly(END + 1);
     }
 
     @Test

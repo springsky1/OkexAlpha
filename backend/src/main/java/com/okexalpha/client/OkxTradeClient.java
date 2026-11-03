@@ -47,6 +47,10 @@ public class OkxTradeClient {
     public static final String PATH_SET_LEVERAGE = "/api/v5/account/set-leverage";
     public static final String PATH_SET_POSITION_MODE = "/api/v5/account/set-position-mode";
     public static final String PATH_MAX_SIZE = "/api/v5/account/max-size";
+    public static final String PATH_POSITIONS_HISTORY = "/api/v5/account/positions-history";
+    public static final String PATH_FILLS_HISTORY = "/api/v5/trade/fills-history";
+    public static final String PATH_BILLS = "/api/v5/account/bills";
+    public static final String PATH_BORROW_REPAY_HISTORY = "/api/v5/account/borrow-repay-history";
 
     private final OkxProperties properties;
     /** 凭证来源：环境变量 > 数据库密文 > 未配置（见 OkxCredentials）。 */
@@ -107,6 +111,18 @@ public class OkxTradeClient {
         return call("GET", PATH_ORDERS_HISTORY_ARCHIVE, ordersQuery(instType, instId, limit), null);
     }
 
+    private static String instTypeOrSwap(String instType) {
+        return instType == null || instType.isBlank()
+                ? "SWAP"
+                : instType.trim().toUpperCase(Locale.ROOT);
+    }
+
+    /** OKX 的 limit 上限 100，越界一律夹到 1..100。 */
+    private static String limitText(Integer limit) {
+        int size = limit == null ? 100 : limit;
+        return String.valueOf(Math.min(Math.max(size, 1), 100));
+    }
+
     private static String ordersQuery(String instType, String instId, Integer limit) {
         Map<String, String> query = new LinkedHashMap<>();
         query.put("instType", instType == null || instType.isBlank() ? "SWAP" : instType.trim().toUpperCase(Locale.ROOT));
@@ -116,6 +132,39 @@ public class OkxTradeClient {
         int size = limit == null ? 100 : limit;
         query.put("limit", String.valueOf(Math.min(Math.max(size, 1), 100)));
         return encode(query);
+    }
+
+    /** 历史仓位（已平仓，最近 3 个月）；instType 必填，缺省按 SWAP。 */
+    public List<JsonNode> positionsHistory(String instType, Integer limit) {
+        Map<String, String> query = new LinkedHashMap<>();
+        query.put("instType", instTypeOrSwap(instType));
+        query.put("limit", limitText(limit));
+        return call("GET", PATH_POSITIONS_HISTORY, encode(query), null);
+    }
+
+    /** 成交明细（最近 3 个月）；instType 必填，缺省按 SWAP。 */
+    public List<JsonNode> fills(String instType, Integer limit) {
+        Map<String, String> query = new LinkedHashMap<>();
+        query.put("instType", instTypeOrSwap(instType));
+        query.put("limit", limitText(limit));
+        return call("GET", PATH_FILLS_HISTORY, encode(query), null);
+    }
+
+    /** 资金账单（最近 7 天）。 */
+    public List<JsonNode> bills(Integer limit) {
+        Map<String, String> query = new LinkedHashMap<>();
+        query.put("limit", limitText(limit));
+        return call("GET", PATH_BILLS, encode(query), null);
+    }
+
+    /** 借币/还币记录；instId 可选，只查单个币种。 */
+    public List<JsonNode> borrowRepay(Integer limit, String instId) {
+        Map<String, String> query = new LinkedHashMap<>();
+        query.put("limit", limitText(limit));
+        if (instId != null && !instId.isBlank()) {
+            query.put("instId", instId.trim());
+        }
+        return call("GET", PATH_BORROW_REPAY_HISTORY, encode(query), null);
     }
 
     public List<JsonNode> maxSize(String instId, String tdMode) {
