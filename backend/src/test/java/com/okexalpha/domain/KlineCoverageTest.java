@@ -2,6 +2,7 @@ package com.okexalpha.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
@@ -119,6 +120,94 @@ class KlineCoverageTest {
         // refresh horizon = 0：只补缺口，已落库的一根都不重拉
         assertThat(plan(S + 2 * HOUR, E, 9L, S, E, 0L, AT_END))
                 .containsExactly(new Segment(S, S + HOUR));
+    }
+
+    // ---- planGaps：洞由调用方用 LAG 查询定位后传入（holes=null 表示没查，[] 表示查了没有） ----
+
+    private static List<Segment> planGaps(Long minTs, Long maxTs, long rows, List<Segment> holes,
+            long startMs, long endMs, long refreshMs, long nowMs) {
+        return KlineCoverage.planGaps(minTs, maxTs, rows, holes, startMs, endMs, HOUR, refreshMs, nowMs);
+    }
+
+    @Test
+    void locatedInteriorGapFetchesOnlyTheHole() {
+        // 窗口满跨 S..E，中间缺一根，洞已定位 → 只拉那一根，不再整段
+        assertThat(planGaps(S, E, 10L, List.of(new Segment(S + 5 * HOUR, S + 5 * HOUR)), S, E, DAY, PAST))
+                .containsExactly(new Segment(S + 5 * HOUR, S + 5 * HOUR));
+    }
+
+    @Test
+    void locatedGapTogetherWithEdgesFetchesAllThree() {
+        // 库内 [S+2h, S+6h] 五根里缺 S+4h：左缘 + 洞 + 右缘
+        assertThat(planGaps(S + 2 * HOUR, S + 6 * HOUR, 4L, List.of(new Segment(S + 4 * HOUR, S + 4 * HOUR)),
+                S, E, DAY, PAST))
+                .containsExactly(new Segment(S, S + HOUR), new Segment(S + 4 * HOUR, S + 4 * HOUR),
+                        new Segment(S + 7 * HOUR, E));
+    }
+
+    @Test
+    void emptyHolesMeansFresherSnapshotFoundNothingSoEdgesOnly() {
+        // rows<slots 但洞查询（更晚的快照）一个洞都没找到（并发已补上）→ 只补边缘，不整段
+        assertThat(planGaps(S, E, 10L, List.of(), S, E, DAY, PAST)).isEmpty();
+    }
+
+    @Test
+    void nullHolesKeepsConservativeFullRange() {
+        // holes=null：没有洞信息，维持旧语义整段重拉
+        assertThat(planGaps(S, E, 10L, null, S, E, DAY, PAST)).containsExactly(new Segment(S, E));
+    }
+
+    @Test
+    void tooManyHolesFallBackToFullRange() {
+        // 段数超上限（长期停牌币等病态情形）：整段比分段便宜，退回保守
+        List<Segment> many = new ArrayList<>();
+        for (int i = 0; i <= KlineCoverage.MAX_GAP_SEGMENTS; i++) {
+            many.add(new Segment(S + i * 2 * HOUR, S + i * 2 * HOUR));
+        }
+        assertThat(planGaps(S, E, 10L, many, S, E, DAY, PAST)).containsExactly(new Segment(S, E));
+        // 恰好等于上限仍然走分段
+        List<Segment> atLimit = many.subList(0, KlineCoverage.MAX_GAP_SEGMENTS);
+        assertThat(KlineCoverage.planGaps(S, E, 10L, atLimit, S, E, HOUR, DAY, PAST))
+                .isNotEqualTo(List.of(new Segment(S, E)));
+    }
+
+    @Test
+    void offGridTimestampsStayFullEvenWithLocatedHoles() {
+        assertThat(planGaps(S, S + 5 * HOUR + 30 * 60_000L, 6L,
+                List.of(new Segment(S + HOUR, S + HOUR)), S, E, DAY, PAST))
+                .containsExactly(new Segment(S, E));
+    }
+
+    @Test
+    void completeRowsIgnoreJunkHoles() {
+        // rows==slots 本来就无洞：传入的脏 holes 必须被忽略，不得造出幻觉段
+        assertThat(planGaps(S + 2 * HOUR, S + 6 * HOUR, 5L, List.of(new Segment(S + 4 * HOUR, S + 4 * HOUR)),
+                S, E, DAY, PAST))
+                .containsExactly(new Segment(S, S + HOUR), new Segment(S + 7 * HOUR, E));
+    }
+
+    @Test
+    void youngTailRefreshCombinesWithLocatedHole() {
+        // 中间有洞 + 窗口末端年轻：左缘 + 洞 + 尾部刷新各拉各的
+        assertThat(planGaps(S + 2 * HOUR, E, 8L, List.of(new Segment(S + 5 * HOUR, S + 5 * HOUR)), S, E,
+                2 * HOUR, AT_END))
+                .containsExactly(new Segment(S, S + HOUR), new Segment(S + 5 * HOUR, S + 5 * HOUR),
+                        new Segment(S + 8 * HOUR, E));
+    }
+
+    @Test
+    void noDataWithHolesStillReturnsFullRange() {
+        // rows=0 却带洞（自相矛盾的输入）：保守整段
+        assertThat(planGaps(null, null, 0L, List.of(new Segment(S + HOUR, S + 2 * HOUR)), S, E, DAY, PAST))
+                .containsExactly(new Segment(S, E));
+    }
+
+    @Test
+    void holeAdjacentToLeftEdgeStaysSeparate() {
+        // 左缘段 [S, S+1h]，洞在 S+3h（中间只隔着 S+2h 一根已存在）→ 相隔 2 个周期不合并
+        assertThat(planGaps(S + 2 * HOUR, E, 8L, List.of(new Segment(S + 3 * HOUR, S + 3 * HOUR)), S, E, DAY,
+                PAST))
+                .containsExactly(new Segment(S, S + HOUR), new Segment(S + 3 * HOUR, S + 3 * HOUR));
     }
 
     @Test

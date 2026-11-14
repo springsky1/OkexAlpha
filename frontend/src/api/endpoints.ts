@@ -69,6 +69,13 @@ export const EP = {
   accountStrategyCenterStatus: (id: string) =>
     '/api/v1/account/strategy-center/' + encodeURIComponent(id) + '/status',
 
+  /* 订单中心：交易所订单的本地镜像（同步 + 只读查询） */
+  accountExchangeStatus: '/api/v1/account/exchange/status',
+  accountExchangeSync: '/api/v1/account/exchange/sync',
+  accountExchangeOrders: '/api/v1/account/exchange/orders',
+  accountExchangePositions: '/api/v1/account/exchange/positions',
+  accountExchangeFills: '/api/v1/account/exchange/fills',
+
   /* 回测参数范围预设 */
   strategyBacktestPresets: '/api/v1/strategy/backtests/presets',
 

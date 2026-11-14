@@ -1192,3 +1192,75 @@ tbody tr.row-link:hover > td { background: #f7faff; }
   min-height: 56px;
   font-family: inherit;
 }
+
+/* ==================== 订单中心：本地镜像 + 勾选汇总 ==================== */
+[data-page="order-center"] th.oc-check,
+[data-page="order-center"] td.oc-check {
+  width: 34px;
+  text-align: center;
+}
+
+[data-page="order-center"] td.oc-check input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--brand);
+  cursor: pointer;
+}
+
+[data-page="order-center"] tbody tr.is-selected > td {
+  background: var(--brand-soft);
+}
+
+#oc-selection .card-head {
+  margin-bottom: 8px;
+}
+
+#oc-selection .oc-selection-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+#oc-selection .oc-selection-sub {
+  margin: 10px 0 4px;
+  font-size: 12.5px;
+  color: var(--text-soft);
+}
+
+#oc-selection .oc-days {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  min-height: 72px;
+  padding-top: 8px;
+  overflow-x: auto;
+}
+
+#oc-selection .oc-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 62px;
+  font-size: 11px;
+  color: var(--text-soft);
+}
+
+#oc-selection .oc-day-bar {
+  width: 26px;
+  min-height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--brand);
+}
+
+#oc-selection .oc-day-bar.val-neg {
+  background: var(--neg, #d9534f);
+}
+
+@media (max-width: 860px) {
+  #oc-selection .oc-selection-grid {
+    grid-template-columns: 1fr;
+  }
+}
+

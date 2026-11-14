@@ -111,6 +111,21 @@ public class MinOrderRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /**
+     * 快照新鲜度：最近一次 refreshed_at 距今多少毫秒；表空/没有时间戳时返回 {@link Long#MAX_VALUE}。
+     *
+     * <p>定时刷新用它决定要不要重新抓：min_order 的 ref_px 与 notional_per_contract_usd 是从当时的价格
+     * 算出来的，长时间不刷新会让"一张合约多少 U"系统性偏离现价（实测偏 3% 以上）。</p>
+     */
+    public long newestAgeMs() {
+        Double seconds = jdbcTemplate.queryForObject(
+                "SELECT extract(epoch from (now() - max(refreshed_at))) FROM okx_min_order", Double.class);
+        if (seconds == null || !Double.isFinite(seconds)) {
+            return Long.MAX_VALUE;
+        }
+        return Math.max(0L, Math.round(seconds * 1000d));
+    }
+
     public long count() {
         Long count = jdbcTemplate.queryForObject("SELECT count(*) FROM okx_min_order", Long.class);
         return count == null ? 0L : count;

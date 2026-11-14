@@ -9,6 +9,7 @@ import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import com.okexalpha.client.OkxApiClient;
@@ -50,6 +51,45 @@ public class MinOrderService {
         this.client = client;
         this.instrumentRepository = instrumentRepository;
         this.minOrderRepository = minOrderRepository;
+    }
+
+    /** 默认自动刷新间隔：30 分钟（配置键 okx.strategy.min-order.refresh-interval-ms）。 */
+    public static final long AUTO_REFRESH_INTERVAL_MS = 30L * 60_000L;
+
+    /**
+     * 是否该重新抓快照（可单测的纯函数）：
+     * 从没抓过（{@link Long#MAX_VALUE}）或已超过间隔的 80% 就刷新；间隔非法时返回 false。
+     *
+     * <p>留 20% 余量，是因为定时刷新与手动 {@code POST /api/v1/strategy/min-order/refresh}
+     * 可能落在同一分钟里——刚手动刷完又自动刷一遍等于白打一次交易所。</p>
+     */
+    static boolean dueForRefresh(long ageMs, long intervalMs) {
+        if (!(intervalMs > 0L)) {
+            return false;
+        }
+        long threshold = Math.max(60_000L, Math.round(intervalMs * 0.8d));
+        return ageMs == Long.MAX_VALUE || ageMs >= threshold;
+    }
+
+    /**
+     * 定时刷新最小下单量快照：ctVal/lotSz 本身很少变，但 notional_per_contract_usd 与 ref_px 是
+     * 用抓取当时的行情算的，放一天就会和现价脱节（影子引擎按 perContractUsd(实时价) 记账，
+     * 但 {@code minSz × 旧 perContract} 这类判断会被旧价带偏）。失败只记日志，不影响主流程。
+     */
+    @Scheduled(fixedDelayString = "${okx.strategy.min-order.refresh-interval-ms:1800000}", initialDelayString = "90000")
+    public void scheduledRefresh() {
+        long interval = AUTO_REFRESH_INTERVAL_MS;
+        try {
+            long age = minOrderRepository.newestAgeMs();
+            if (!dueForRefresh(age, interval)) {
+                return;
+            }
+            RefreshResult result = refresh();
+            log.info("min-order auto refresh: rows={} tradable={} ageBefore={}ms", result.instruments(),
+                    result.tradable(), age);
+        } catch (RuntimeException ex) {
+            log.warn("min-order auto refresh failed: {}", ex.toString());
+        }
     }
 
     /** 一次刷新：拉 SWAP 行情 + 品种表，重算 532 个合约的最小下单量。 */

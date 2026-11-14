@@ -12,10 +12,15 @@ import com.okexalpha.strategy.engine.PriceBar;
 @Service
 public class BacktestSeriesLoader {
 
-    private static final String SERIES_SQL = """
+    /**
+     * 只取已收盘 bar（F2）：{@code confirm = false} 的 bar 的 high/low 还会变，
+     * 喂给回测就是未来函数。完整性与否由 loader 兜底，不依赖调用方。
+     */
+    static final String SERIES_SQL = """
             SELECT ts_ms, open, high, low, close
             FROM okx_kline
             WHERE inst_id = ? AND bar = ? AND kline_type = 'CANDLE'
+              AND confirm = true
               AND ts_ms >= ? AND ts_ms <= ?
             ORDER BY ts_ms
             """;
@@ -54,11 +59,11 @@ public class BacktestSeriesLoader {
         return n == null ? 0 : n;
     }
 
-    /** 库内该币该周期的行数（用于提交前判断数据是否已就绪）。 */
+    /** 库内该币该周期<b>已收盘</b>的行数（用于提交前判断数据是否已就绪）。 */
     public int countBars(String instId, String bar) {
         Integer n = jdbcTemplate.queryForObject("""
                 SELECT count(*) FROM okx_kline
-                WHERE inst_id = ? AND bar = ? AND kline_type = 'CANDLE'
+                WHERE inst_id = ? AND bar = ? AND kline_type = 'CANDLE' AND confirm = true
                 """, Integer.class, instId, bar);
         return n == null ? 0 : n;
     }

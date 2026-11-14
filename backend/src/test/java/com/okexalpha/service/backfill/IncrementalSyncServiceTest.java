@@ -30,6 +30,7 @@ import com.okexalpha.error.ConflictException;
 import com.okexalpha.error.NotFoundException;
 import com.okexalpha.repository.BackfillJobRepository;
 import com.okexalpha.repository.InstrumentRepository;
+import com.okexalpha.repository.KlineRepository;
 import com.okexalpha.repository.SyncCursorRepository;
 
 /**
@@ -42,6 +43,7 @@ class IncrementalSyncServiceTest {
 
     private static final long NOW = 1_700_000_000_000L;
     private static final long LOOKBACK = 3_600_000L;
+    private static final long SEED_MAX_AGE = 3 * 86_400_000L;
     private static final long LAG = 60_000L;
     private static final String INST = "BTC-USDT-SWAP";
     private static final String KEY = "kline|CANDLE|" + INST + "|1m";
@@ -50,6 +52,8 @@ class IncrementalSyncServiceTest {
     private BackfillJobRepository jobRepository;
     private SyncCursorRepository cursorRepository;
     private InstrumentRepository instrumentRepository;
+    private KlineRepository klineRepository;
+    private TopVolumeSelector topVolumeSelector;
 
     /** 水位库的假实现：all() 返回快照，set() 直接落进这个 map。 */
     private final Map<String, Long> cursors = new LinkedHashMap<>();
@@ -60,7 +64,11 @@ class IncrementalSyncServiceTest {
         jobRepository = mock(BackfillJobRepository.class);
         cursorRepository = mock(SyncCursorRepository.class);
         instrumentRepository = mock(InstrumentRepository.class);
+        klineRepository = mock(KlineRepository.class);
+        topVolumeSelector = mock(TopVolumeSelector.class);
         cursors.clear();
+        when(klineRepository.maxTs(any(), any(), any())).thenReturn(null);
+        when(topVolumeSelector.select(anyInt())).thenReturn(List.of());
 
         when(cursorRepository.all()).thenAnswer(invocation -> new LinkedHashMap<>(cursors));
         doAnswer(invocation -> {
@@ -72,7 +80,8 @@ class IncrementalSyncServiceTest {
 
     private IncrementalSyncService service(boolean enabled) {
         return new IncrementalSyncService(backfillService, jobRepository, cursorRepository, instrumentRepository,
-                enabled, 300_000L, LOOKBACK, LAG, "1m", "CANDLE", 20, () -> NOW);
+                klineRepository, topVolumeSelector, enabled, 300_000L, LOOKBACK, SEED_MAX_AGE, LAG, "1m", "CANDLE",
+                20, () -> NOW);
     }
 
     @Test
@@ -85,7 +94,8 @@ class IncrementalSyncServiceTest {
         assertThat(result.jobs()).isEmpty();
         assertThat(result.seeded()).isZero();
         assertThat(result.cursorAdvanced()).isZero();
-        verifyNoInteractions(backfillService, jobRepository, cursorRepository, instrumentRepository);
+        verifyNoInteractions(backfillService, jobRepository, cursorRepository, instrumentRepository,
+                topVolumeSelector);
     }
 
     @Test
@@ -108,7 +118,8 @@ class IncrementalSyncServiceTest {
     @DisplayName("游标为空：只播种 now-lookback，本轮不提交任何作业")
     void emptyCursorOnlySeeds() {
         IncrementalSyncService service = new IncrementalSyncService(backfillService, jobRepository, cursorRepository,
-                instrumentRepository, true, 300_000L, LOOKBACK, LAG, "1m", "CANDLE", 20, () -> NOW);
+                instrumentRepository, klineRepository, topVolumeSelector, true, 300_000L, LOOKBACK, SEED_MAX_AGE, LAG, "1m", "CANDLE", 20,
+                () -> NOW);
 
         IncrementalSyncService.RunResult result = service.runOnce();
 
@@ -120,6 +131,32 @@ class IncrementalSyncServiceTest {
         assertThat(cursors).containsEntry(KEY, NOW - LOOKBACK);
         verify(cursorRepository).set(KEY, NOW - LOOKBACK);
         verify(backfillService, never()).submitKlines(any());
+    }
+
+    @Test
+    @DisplayName("播种优先接库内水位：max(ts) 新鲜（< seed-max-age）时从它续拉，避免凭空制造缺口")
+    void seedsFromDbMaxWhenFresh() {
+        long dbMax = NOW - 20 * 3_600_000L; // 20h 前，远新于 3d 上限
+        when(klineRepository.maxTs("CANDLE", INST, "1m")).thenReturn(dbMax);
+
+        IncrementalSyncService.RunResult result = service(true).runOnce();
+
+        assertThat(result.seeded()).isEqualTo(1);
+        assertThat(cursors).containsEntry(KEY, dbMax);
+        verify(cursorRepository).set(KEY, dbMax);
+        verify(backfillService, never()).submitKlines(any());
+    }
+
+    @Test
+    @DisplayName("库内水位太旧（> seed-max-age）：退回 now-lookback 播种")
+    void staleDbMaxFallsBackToLookback() {
+        when(klineRepository.maxTs("CANDLE", INST, "1m")).thenReturn(NOW - 10 * 86_400_000L); // 10d 前
+
+        IncrementalSyncService.RunResult result = service(true).runOnce();
+
+        assertThat(result.seeded()).isEqualTo(1);
+        assertThat(cursors).containsEntry(KEY, NOW - LOOKBACK);
+        verify(cursorRepository).set(KEY, NOW - LOOKBACK);
     }
 
     @Test
@@ -225,7 +262,8 @@ class IncrementalSyncServiceTest {
     void submitsOneJobPerBar() {
         long end = NOW - LAG;
         IncrementalSyncService service = new IncrementalSyncService(backfillService, jobRepository, cursorRepository,
-                instrumentRepository, true, 300_000L, LOOKBACK, LAG, "1m,1H", "CANDLE", 20, () -> NOW);
+                instrumentRepository, klineRepository, topVolumeSelector, true, 300_000L, LOOKBACK, SEED_MAX_AGE, LAG, "1m,1H", "CANDLE",
+                20, () -> NOW);
         cursors.put(KEY, end - 120_000L);
         cursors.put("kline|CANDLE|" + INST + "|1H", end - 7_200_000L);
         when(backfillService.submitKlines(any()))
@@ -365,7 +403,8 @@ class IncrementalSyncServiceTest {
     void scheduledRunIsNoOpWhenDisabled() {
         service(false).scheduledRun();
 
-        verifyNoInteractions(backfillService, jobRepository, cursorRepository, instrumentRepository);
+        verifyNoInteractions(backfillService, jobRepository, cursorRepository, instrumentRepository,
+                topVolumeSelector);
     }
 
     @Test
@@ -386,7 +425,8 @@ class IncrementalSyncServiceTest {
     void seedsThenBackfillsOnNextRound() {
         AtomicLong clock = new AtomicLong(NOW);
         IncrementalSyncService service = new IncrementalSyncService(backfillService, jobRepository, cursorRepository,
-                instrumentRepository, true, 300_000L, LOOKBACK, LAG, "1m", "CANDLE", 20, clock::get);
+                instrumentRepository, klineRepository, topVolumeSelector, true, 300_000L, LOOKBACK, SEED_MAX_AGE, LAG, "1m", "CANDLE", 20,
+                clock::get);
 
         IncrementalSyncService.RunResult first = service.runOnce();
         assertThat(first.seeded()).isEqualTo(1);
@@ -403,6 +443,31 @@ class IncrementalSyncServiceTest {
         verify(backfillService).submitKlines(captor.capture());
         assertThat(captor.getValue().startMs()).isEqualTo(NOW - LOOKBACK + 1);
         assertThat(captor.getValue().endMs()).isEqualTo(NOW + 300_000L - LAG);
+    }
+
+    @Test
+    @DisplayName("成交量排名可用时直接采用，不再走字母序")
+    void prefersVolumeRankedSelectionWhenAvailable() {
+        when(topVolumeSelector.select(20)).thenReturn(List.of("BTC-USDT-SWAP", "ETH-USDT-SWAP"));
+
+        IncrementalSyncService.RunResult result = service(true).runOnce();
+
+        // 2 品种 × 1 bar × 1 类型 = 2 个组合全部播种，且完全没碰字母序查询
+        assertThat(result.seeded()).isEqualTo(2);
+        assertThat(cursors).containsKey("kline|CANDLE|BTC-USDT-SWAP|1m");
+        assertThat(cursors).containsKey("kline|CANDLE|ETH-USDT-SWAP|1m");
+        verify(instrumentRepository, never()).findInstIds(any(), any(), anyInt());
+    }
+
+    @Test
+    @DisplayName("成交量排名失败/为空时退回字母序选择，整轮同步不受影响")
+    void fallsBackToAlphabeticalWhenVolumeSelectionFails() {
+        when(topVolumeSelector.select(anyInt())).thenThrow(new IllegalStateException("tickers down"));
+
+        IncrementalSyncService.RunResult result = service(true).runOnce();
+
+        assertThat(result.seeded()).isEqualTo(1);
+        assertThat(cursors).containsEntry(KEY, NOW - LOOKBACK);
     }
 
     private static BackfillJobRow job(long id) {

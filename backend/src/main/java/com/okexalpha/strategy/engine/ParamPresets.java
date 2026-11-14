@@ -6,8 +6,9 @@ import java.util.List;
  * 回测参数范围预设：给前端 chips 与后端校验共用的一份目录。
  *
  * <p>每个预设只描述 6 个寻优维度的范围，其余参数（保证金、持仓时长、费率、滑点）仍由提交表单决定。
- * 组合数由维度精确计算得出（{@link ParamRanges#combos()}），可能超过
- * {@code strategy.backtest.max-combos}：服务端会按 maxCombos 截断并在 requestJson 里标记
+ * 组合数由维度精确计算得出（{@link ParamRanges#combos()}）。组合数已不设业务上限（
+ * {@code strategy.backtest.max-combos: 0}）：提交时会按 requested/default-sample-size 抽样，
+ * 只有网格展开护栏 {@link ParamRanges#DEFAULT_EXPAND_LIMIT} 会截断，并在 requestJson 里标记
  * {@code rangeTruncated=true}，不会静默少算。</p>
  */
 public record ParamPresets(String key, String label, String note, ParamRanges ranges, int combos) {
@@ -35,7 +36,7 @@ public record ParamPresets(String key, String label, String note, ParamRanges ra
                 new ParamRanges.Range(1.0d, 3.0d, 0.5d),
                 new ParamRanges.Range(15d, 30d, 5d),
                 List.of());
-        return of("balanced", "均衡", "杠杆与加仓间隔铺开，兼顾稳定性与收益弹性；组合数通常超过默认上限，会按上限抽样。", ranges);
+        return of("balanced", "均衡", "杠杆与加仓间隔铺开，兼顾稳定性与收益弹性；组合数较多，按 combos 抽样（不设上限）。", ranges);
     }
 
     /** 激进：高杠杆、深层加仓、宽止盈，只在能承受大幅回撤时使用。 */

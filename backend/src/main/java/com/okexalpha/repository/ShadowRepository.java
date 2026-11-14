@@ -23,7 +23,15 @@ import com.okexalpha.domain.ShadowPositionRow;
 @Repository
 public class ShadowRepository {
 
+    /** 行情新鲜度只看最近 7 天（-> 只扫最近的 chunk），足够判定「数据是否还在进」。 */
+    private static final long LATEST_KLINE_WINDOW_MS = 7L * 24L * 3600_000L;
+    /** 最新 K 线时间戳缓存 180 秒：健康检查（60s 一轮）与实盘门禁共用，冷查一次约 2 秒。 */
+    private static final long LATEST_KLINE_CACHE_MS = 180_000L;
+
     private final JdbcTemplate jdbcTemplate;
+    /** bar -> [tsMs, fetchedAtMs]；0 表示窗口内没有数据。 */
+    private final java.util.concurrent.ConcurrentHashMap<String, long[]> latestKlineCache =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     public ShadowRepository(JdbcTemplate jdbcTemplate) {
         this.jdbcTemplate = jdbcTemplate;
@@ -157,6 +165,44 @@ public class ShadowRepository {
         return count == null ? 0L : count;
     }
 
+    /**
+     * 全部开放影子持仓的已用保证金合计（+ 每一层的名义敞口），用于「共享账户」闸门。
+     *
+     * <p>策略层原先各自只看自己的 {@code accountCapitalUsd}：4 个币各给 3385U 权益，合计 13.5K，
+     * 而真实账户只有 942U —— 每个币单独看都"开得出来"，一起看就超配。这道求和就是补上这一层。</p>
+     */
+    public double totalOpenMargin() {
+        Double sum = jdbcTemplate.queryForObject(
+                "SELECT COALESCE(sum(margin_usd), 0) FROM okx_shadow_position WHERE status = 'OPEN'", Double.class);
+        return sum == null ? 0d : sum;
+    }
+
+    /** 活跃策略声明的每币资金之和：真实账户读不到时的权益兜底（配置口径，不是市场口径）。 */
+    public double configuredCapitalSum() {
+        Double sum = jdbcTemplate.queryForObject("""
+                SELECT COALESCE(sum(capital_per_coin_usd), 0) FROM okx_strategy
+                WHERE mode = 'SHADOW' AND status IN ('CANDIDATE', 'PROMOTED') AND capital_per_coin_usd > 0
+                """, Double.class);
+        return sum == null ? 0d : sum;
+    }
+
+    /**
+     * 该策略在**这个合约上**已平仓仓位的累计盈亏（平仓时已扣手续费与资金费）。
+     *
+     * <p>加仓闸门把它并进可用权益：亏过钱的账户不该继续放大名义。按合约分组是为了与回测严格同口径——
+     * 回测的每个币是一条独立的 {@code Sim}（自己的账户权益与已实现盈亏），手工持仓（strategy_id 为空）算 0。</p>
+     */
+    public double realizedPnl(Long strategyId, String instId) {
+        if (strategyId == null || instId == null) {
+            return 0d;
+        }
+        Double sum = jdbcTemplate.queryForObject("""
+                SELECT COALESCE(sum(unrealized_pnl), 0) FROM okx_shadow_position
+                WHERE strategy_id = ? AND inst_id = ? AND status = 'CLOSED'
+                """, Double.class, strategyId, instId);
+        return sum == null ? 0d : sum;
+    }
+
     public long insertPosition(Long strategyId, String instId, String side, double sz, double entryPx, double markPx,
             double notionalUsd, double unrealizedPnl, double leverage, double liqPx, double marginUsd) {
         Long id = jdbcTemplate.queryForObject("""
@@ -258,13 +304,27 @@ public class ShadowRepository {
                 POSITION_MAPPER, strategyId, status.trim().toUpperCase(java.util.Locale.ROOT), limit, offset);
     }
 
-    /** 某策略某合约已成交的加仓层数（OPEN + LAYER 订单数）。 */
-    public int countLayers(Long strategyId, String instId) {
-        Integer count = jdbcTemplate.queryForObject("""
+    /**
+     * 某策略某合约<b>当前这笔持仓</b>已成交的加仓层数（OPEN + LAYER 订单数）。
+     *
+     * <p>必须带上 {@code since}（持仓 opened_at）：早期实现不带时间窗，历史所有平仓的 LAYER 订单都会累加，
+     * 几笔交易之后 {@code layers} 恒等于 maxLayers，马丁加仓直接失效。</p>
+     */
+    public int countLayers(Long strategyId, String instId, OffsetDateTime since) {
+        StringBuilder sql = new StringBuilder("""
                 SELECT count(*) FROM okx_shadow_order
                 WHERE inst_id = ? AND status = 'FILLED' AND reason IN ('OPEN', 'LAYER')
                   AND (?::bigint IS NULL OR strategy_id = ?::bigint)
-                """, Integer.class, instId, strategyId, strategyId);
+                """);
+        List<Object> args = new java.util.ArrayList<>(3);
+        args.add(instId);
+        args.add(strategyId);
+        args.add(strategyId);
+        if (since != null) {
+            sql.append(" AND decided_at >= ?");
+            args.add(since);
+        }
+        Integer count = jdbcTemplate.queryForObject(sql.toString(), Integer.class, args.toArray());
         return count == null ? 0 : count;
     }
 
@@ -367,8 +427,28 @@ public class ShadowRepository {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
+    /**
+     * 该周期最新一根 K 线的时间戳（行情新鲜度探针）。
+     *
+     * <p>okx_kline 是 3 亿行级的 hypertable，而 {@code WHERE bar = ?} 没有 inst_id 前缀，走不了
+     * {@code pk (kline_type, inst_id, bar, ts_ms)} 也走不了 {@code (inst_id, bar, kline_type, ts_ms DESC)}，
+     * 实测一次 max() 全表并行扫要 33 秒；健康检查每 60 秒问一次，等于把库按在地上摩擦。</p>
+     *
+     * <p>这里加 {@code ts_ms} 下界：ts_ms 是 hypertable 的分区列，带下界后 TimescaleDB 只扫窗口内的
+     * chunk（chunk_time_interval = 7 天）；再叠一层 60 秒缓存，让健康检查 / 实盘门禁共用同一次查询。</p>
+     */
     public Long latestKlineTs(String bar) {
-        return jdbcTemplate.queryForObject("SELECT max(ts_ms) FROM okx_kline WHERE bar = ?", Long.class, bar);
+        long now = System.currentTimeMillis();
+        long[] cached = latestKlineCache.get(bar);
+        if (cached != null && now - cached[1] < LATEST_KLINE_CACHE_MS) {
+            return cached[0] > 0L ? cached[0] : null;
+        }
+        // 7 天窗口：比健康检查的 2 小时超时阈值宽，行情真断了仍能拿到旧值来判定「多久没更新」。
+        Long ts = jdbcTemplate.queryForObject(
+                "SELECT max(ts_ms) FROM okx_kline WHERE bar = ? AND ts_ms >= ?", Long.class, bar,
+                now - LATEST_KLINE_WINDOW_MS);
+        latestKlineCache.put(bar, new long[] {ts == null ? 0L : ts, now});
+        return ts;
     }
 
     /** 最近 N 分钟 API 成功/失败计数。 */

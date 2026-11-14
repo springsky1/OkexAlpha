@@ -354,7 +354,8 @@ export type BtPayloadResult =
 
 /* 校验顺序与 legacy submitBacktest 完全一致：combos → topN → coinLimit → maxHold → margin → 7 天窗口 */
 export function btBuildPayload(form: BtSubmitFormState): BtPayloadResult {
-  const combos = btCheckInt(form.combos, 1, 2000, 'combos')
+  // 组合数已不设业务上限（服务端 max-combos: 0）；这里的 20000 只是网格展开护栏 ParamRanges.DEFAULT_EXPAND_LIMIT
+  const combos = btCheckInt(form.combos, 1, 20000, 'combos')
   if (!combos.ok) return { ok: false, message: combos.message || '', box: false }
   const topN = btCheckInt(form.topN, 1, 20, 'topN')
   if (!topN.ok) return { ok: false, message: topN.message || '', box: false }

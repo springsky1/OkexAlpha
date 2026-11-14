@@ -15,6 +15,7 @@ import java.util.List;
  * @param combos           抽样参数组合数（默认 okx.strategy.backtest.default-sample-size）
  * @param topN             精调阶段保留的 Top-N 组合（默认 5，上限 20）
  * @param marginUsd        单币保证金（缺省 0 = 用 okx.strategy.trading.capital-per-coin-usd，再缺省 100）
+ * @param accountCapitalUsd 单币账户权益（加仓闸门上限 = 权益 × 95%；缺省 0 = marginUsd × 8）
  * @param maxHoldHours     最长持仓小时（默认 48）
  * @param fundingPer8hPct  每 8 小时资金费率 %（默认 0.01）
  * @param seed             抽样随机种子（默认 20261101）
@@ -31,6 +32,7 @@ public record BacktestRequest(
         Integer combos,
         Integer topN,
         Double marginUsd,
+        Double accountCapitalUsd,
         Integer maxHoldHours,
         Double fundingPer8hPct,
         Long seed,

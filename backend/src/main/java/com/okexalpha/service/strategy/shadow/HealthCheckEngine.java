@@ -117,11 +117,14 @@ public class HealthCheckEngine {
                     map("ageMs", ageMs, "tickIntervalMs", tickInterval, "strategies", strategies.size())));
 
             // 2) 行情新鲜度（1m K 线）
+            // latestKlineTs 只查最近 7 天（hypertable 只扫最近 chunk），所以 null 的含义是
+            // 「近 7 天没有 1m K 线」，不是「库内从未有过」。
             Long latestKline = repository.latestKlineTs("1m");
             long staleMs = latestKline == null ? Long.MAX_VALUE : System.currentTimeMillis() - latestKline;
             String marketLevel = staleMs > 2L * 3_600_000L ? LEVEL_WARN : LEVEL_OK;
             count(record(batch, "MARKET_DATA_FRESH", marketLevel, "GLOBAL", null,
-                    latestKline == null ? "库内没有 1m K 线" : "最新 1m K 线 " + seconds(staleMs) + " 秒前",
+                    latestKline == null ? "近 7 天没有 1m K 线（检查增量同步/回补）"
+                            : "最新 1m K 线 " + seconds(staleMs) + " 秒前",
                     map("staleMs", staleMs, "latestKlineTs", latestKline)));
 
             // 3) 资金利用率
@@ -146,7 +149,8 @@ public class HealthCheckEngine {
             }
 
             // 4) 逐仓退出风险（超时 / 距止损 / 距强平）
-            boolean nearExitFail = false;
+            // 只有真正命中 FAIL 的持仓才进这个列表：自动平仓必须逐笔精确制导
+            List<ShadowPositionRow> nearExitPositions = new ArrayList<>(2);
             for (ShadowPositionRow pos : positions) {
                 StrategyParams params = paramsById.get(pos.strategyId() == null ? -1L : pos.strategyId());
                 double mark = pos.markPx() == null ? (pos.entryPx() == null ? 0d : pos.entryPx()) : pos.markPx();
@@ -164,7 +168,7 @@ public class HealthCheckEngine {
                 if (liqDistancePct < 15d) {
                     reasons.add(String.format(java.util.Locale.ROOT, "距强平 %.1f%%", liqDistancePct));
                     posLevel = LEVEL_FAIL;
-                    nearExitFail = true;
+                    nearExitPositions.add(pos);
                 }
                 if (heldHours >= maxHoldHours) {
                     reasons.add("持仓 " + heldHours + "h ≥ 上限 " + maxHoldHours + "h");
@@ -172,9 +176,14 @@ public class HealthCheckEngine {
                         posLevel = LEVEL_WARN;
                     }
                 }
-                if (params != null && pos.entryPx() != null && pos.marginUsd() != null && pos.sz() > 0d) {
+                // pos.sz() 是「合约张数」，ShadowMath.stopPrice 要的是「币数量」：
+                // 直接传 sz 会把止损距离放大/缩小 ctVal 倍（BTC 100 倍、DOGE 1/1000），
+                // 于是这条规则长期误报 WARN，真正贴近止损的仓位反而被淹没。以名义金额反算币数量。
+                double coinQty = pos.notionalUsd() != null && pos.notionalUsd() > 0d && pos.entryPx() != null
+                        && pos.entryPx() > 0d ? pos.notionalUsd() / pos.entryPx() : pos.sz();
+                if (params != null && pos.entryPx() != null && pos.marginUsd() != null && coinQty > 0d) {
                     double stop = com.okexalpha.strategy.engine.ShadowMath.stopPrice(pos.entryPx(), longSide,
-                            params.stopLossPct(), pos.marginUsd(), pos.sz());
+                            params.stopLossPct(), pos.marginUsd(), coinQty);
                     double stopDistancePct = Math.abs(mark - stop) / mark * 100d;
                     if (stopDistancePct < 2d) {
                         reasons.add(String.format(java.util.Locale.ROOT, "距止损 %.1f%%", stopDistancePct));
@@ -240,9 +249,9 @@ public class HealthCheckEngine {
                             : "没有运行中的补拉作业",
                     map("runningJobs", runningBackfills)));
 
-            // FAIL 级退出风险 → 按开关自动平仓（只动影子账本）
-            if (nearExitFail && properties.strategy().health().autoExit()) {
-                autoExited = autoExit(batch);
+            // FAIL 级退出风险 → 按开关自动平仓（只平命中的那几笔，只动影子账本）
+            if (!nearExitPositions.isEmpty() && properties.strategy().health().autoExit()) {
+                autoExited = autoExit(nearExitPositions, paramsById, batch);
             }
 
             long duration = System.currentTimeMillis() - start;
@@ -283,18 +292,27 @@ public class HealthCheckEngine {
         return null;
     }
 
-    private int autoExit(OffsetDateTime batch) {
+    /**
+     * 自动平仓：只处理本轮被判定为 FAIL 的持仓，逐笔走影子引擎的强制平仓通道。
+     *
+     * <p>旧实现遍历 {@code repository.openPositions()} 全平，且用上一 tick 的 {@code unrealizedPnl} 入账，
+     * 一次误报就把所有正常持仓清零并留下过期盈亏。现在改为：只平目标持仓、按当前标记价重算（含手续费/资金费）。</p>
+     */
+    private int autoExit(List<ShadowPositionRow> targets, Map<Long, StrategyParams> paramsById, OffsetDateTime batch) {
         int closed = 0;
-        for (ShadowPositionRow pos : repository.openPositions()) {
+        for (ShadowPositionRow pos : targets) {
             double mark = pos.markPx() == null ? (pos.entryPx() == null ? 0d : pos.entryPx()) : pos.markPx();
             if (mark <= 0d) {
                 continue;
             }
-            repository.insertOrder(pos.strategyId(), pos.instId(), StrategyParams.LONG.equals(pos.side()) ? "sell" : "buy",
-                    "market", pos.sz(), mark, pos.notionalUsd(), "FILLED", "AUTO_EXIT", System.currentTimeMillis());
-            repository.closePosition(pos.id(), mark, pos.unrealizedPnl() == null ? 0d : pos.unrealizedPnl());
+            StrategyParams params = pos.strategyId() == null ? shadowEngine.defaultParams()
+                    : paramsById.getOrDefault(pos.strategyId(), shadowEngine.defaultParams());
+            if (!shadowEngine.forceClose(pos, params, "AUTO_EXIT", mark)) {
+                continue;
+            }
             count(record(batch, "AUTO_EXIT", LEVEL_WARN, "STRATEGY:" + pos.strategyId(), pos.instId(),
-                    "自动平仓（距强平过近）", map("markPx", mark)));
+                    String.format(java.util.Locale.ROOT, "自动平仓（距强平过近）mark=%.6f", mark),
+                    map("positionId", pos.id(), "markPx", mark, "sz", pos.sz())));
             closed++;
         }
         return closed;

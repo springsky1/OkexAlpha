@@ -1,0 +1,17 @@
+{
+  "strategies": 21,
+  "capital_usd": 28.9804,
+  "net_pnl_usd": 754.02,
+  "roi_pct": 2601.82,
+  "max_drawdown_usd": -1.61,
+  "max_drawdown_pct_of_capital": -5.56,
+  "sharpe": 29.875,
+  "days": 310,
+  "trades": 70408,
+  "win_rate_weighted": 92.34,
+  "worst_loss_usd": 4.0193,
+  "worst_loss_pct_avail": 4.45,
+  "util_pct": 32.1,
+  "buffer_usd": 61.2908,
+  "common_days": 310
+}

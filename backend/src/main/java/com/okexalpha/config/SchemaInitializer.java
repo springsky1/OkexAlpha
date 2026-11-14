@@ -37,7 +37,9 @@ public class SchemaInitializer implements ApplicationRunner {
             // 策略相关（阶段 C）
             "okx_min_order", "okx_strategy", "okx_backtest_run", "okx_backtest_result", "okx_backtest_trade",
             "okx_backtest_equity", "okx_shadow_order", "okx_shadow_position", "okx_health_check",
-            "okx_portfolio_snapshot", "okx_credential_vault");
+            "okx_portfolio_snapshot", "okx_credential_vault",
+            // 订单中心本地镜像（平台真实订单 / 已平仓仓位 / 逐笔成交）
+            "okx_exchange_order", "okx_exchange_position", "okx_exchange_fill");
 
     private final DataSource dataSource;
     private final JdbcTemplate jdbcTemplate;

@@ -1,0 +1,16 @@
+{
+  "inst_id": "BTC-USDT-SWAP",
+  "side": "long",
+  "layers": [
+    {
+      "px": 75916.1802,
+      "sz": 0.01,
+      "notional": 7.5901000000000005,
+      "margin": 2.5300333333333334
+    }
+  ],
+  "opened_ts": 1794056400000,
+  "realized": 0.0,
+  "day": "2026-11-07",
+  "day_pnl": 0.0
+}

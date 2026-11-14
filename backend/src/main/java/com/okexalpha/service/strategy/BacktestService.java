@@ -28,11 +28,13 @@ import com.okexalpha.strategy.engine.MartingaleBacktester;
 import com.okexalpha.strategy.engine.ParamRanges;
 import com.okexalpha.strategy.engine.ParamSampler;
 import com.okexalpha.strategy.engine.PriceBar;
+import com.okexalpha.strategy.engine.ShadowMath;
 import com.okexalpha.strategy.engine.StrategyParams;
 import com.okexalpha.web.dto.BacktestRequest;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 /**
  * 回测服务（阶段 C / P1）。
@@ -44,8 +46,9 @@ import tools.jackson.databind.ObjectMapper;
  *   <li><b>REFINE</b>：对 Top-N 组合逐币跑全区间，落单币明细；冠军组合额外落逐笔成交与资金曲线。</li>
  * </ol>
  *
- * <p>score = 0.6×样本内平均收益率 − 0.3×样本内平均回撤 + 0.4×样本外平均收益率（百分比口径）。
- * 这样既奖励稳定盈利，也惩罚靠单边行情堆出来的高回撤曲线。</p>
+ * <p>score = 0.6×样本内超额收益 − 0.3×样本内平均回撤 + 0.4×样本外超额收益（百分比口径）。
+ * 超额收益 = 策略按初始保证金口径的收益率 − 同窗口同杠杆的买入持有收益率，因此既奖励稳定盈利、
+ * 惩罚高回撤曲线，也不会把"单纯吃到单边行情 beta"的组合排到第一。</p>
  */
 @Service
 public class BacktestService {
@@ -57,11 +60,17 @@ public class BacktestService {
     private static final long MIN_WINDOW_MS = 7L * 86_400_000L;
     /** 样本内占比（其余为样本外验证段）。 */
     private static final double IN_SAMPLE_RATIO = 0.7d;
-    /** 一次批次最多落多少个聚合结果行，避免 400 组全量写库。 */
-    private static final int MAX_RESULT_ROWS = 300;
     /** 判定 CANDIDATE 所需的最少总成交笔数（否则样本太少不足信）。 */
     private static final int MIN_TRADES = 10;
+    /** OOS 段最少成交笔数（方案 §2.7：648 组参数 × 90 天，噪声也能凑出"OOS 为正"）。 */
+    private static final int MIN_OOS_TRADES = 30;
+    /** OOS 段最大回撤上限（%）：马丁的回撤是收敛型亏损的先行指标。 */
+    private static final double MAX_OOS_DRAWDOWN_PCT = 25d;
+    /** IS 段最大回撤上限（%）：原来只卡 OOS 回撤，样本内 40%+ 回撤的杠杆组合照样能拿第一。 */
+    private static final double MAX_IS_DRAWDOWN_PCT = 40d;
     private static final int MAX_COINS = 50;
+    /** 未显式给账户权益时，按「首层保证金 × 该层数」估：默认 8 层马丁对应的账户规模。 */
+    private static final int DEFAULT_ACCOUNT_LAYERS = 8;
 
     private final BacktestRepository repository;
     private final BacktestSeriesLoader loader;
@@ -137,18 +146,21 @@ public class BacktestService {
         int maxHoldHours = clamp(request.maxHoldHours() == null ? 48 : request.maxHoldHours(), 1, 24 * 30);
         double fundingPct = request.fundingPer8hPct() == null ? 0.01d : Math.max(0d, request.fundingPer8hPct());
 
+        // 账户权益：加仓闸门用「已用保证金 + 新层 <= 权益 × 95%」判断这一层开不开。
+        // 没给就按首层保证金 × DEFAULT_ACCOUNT_LAYERS 估，恰好等于 8 层打满所需的资金。
+        double accountCapitalUsd = request.accountCapitalUsd() != null && request.accountCapitalUsd() > 0
+                ? request.accountCapitalUsd()
+                : marginUsd * DEFAULT_ACCOUNT_LAYERS;
+
         StrategyParams base;
         try {
             base = new StrategyParams(StrategyParams.LONG, marginUsd, 5, 5, 2.5d, 1.0d, 2.0d, 25.0d, maxHoldHours,
-                    properties.strategy().trading().feeTaker(), fundingPct,
-                    properties.strategy().trading().slippageBps());
+                    properties.strategy().trading().feeTaker(), properties.strategy().trading().feeMaker(), fundingPct,
+                    properties.strategy().trading().slippageBps(), accountCapitalUsd);
         } catch (IllegalArgumentException ex) {
             throw new BadRequestException(ex.getMessage());
         }
 
-        int maxCombos = Math.max(1, properties.strategy().backtest().maxCombos());
-        int want = clamp(request.combos() == null ? properties.strategy().backtest().defaultSampleSize()
-                : request.combos(), 1, maxCombos);
         long seed = request.seed() == null ? 20261101L : request.seed();
 
         // 可选的自定义参数范围：先校验，再按范围展开网格，最后仍按 want 抽样（保证复现性）
@@ -166,12 +178,15 @@ public class BacktestService {
             }
             rangeCombos = ranges.combos();
             grid = ParamSampler.grid(base, ranges);
-            rangeTruncated = rangeCombos > maxCombos || rangeCombos > grid.size();
+            // 只有网格展开护栏（ParamRanges.DEFAULT_EXPAND_LIMIT）还会截断；组合数本身已无上限
+            rangeTruncated = rangeCombos > grid.size();
             if (rangeTruncated) {
-                log.info("backtest param ranges expand to {} combo(s), over max-combos {} (kept {}), sampling {}",
-                        rangeCombos, maxCombos, grid.size(), want);
+                log.info("backtest param ranges expand to {} combo(s), grid capped at {} by the expand limit",
+                        rangeCombos, grid.size());
             }
         }
+        int want = wantCombos(request.combos(), properties.strategy().backtest().defaultSampleSize(),
+                properties.strategy().backtest().maxCombos(), grid.size());
         List<StrategyParams> combos = ParamSampler.sample(grid, want, seed);
         int topN = clamp(request.topN() == null ? 5 : request.topN(), 1, 20);
 
@@ -184,9 +199,11 @@ public class BacktestService {
         requestMap.put("combos", combos.size());
         requestMap.put("topN", topN);
         requestMap.put("marginUsd", marginUsd);
+        requestMap.put("accountCapitalUsd", accountCapitalUsd);
         requestMap.put("maxHoldHours", maxHoldHours);
         requestMap.put("fundingPer8hPct", fundingPct);
         requestMap.put("feeTaker", properties.strategy().trading().feeTaker());
+        requestMap.put("feeMaker", properties.strategy().trading().feeMaker());
         requestMap.put("slippageBps", properties.strategy().trading().slippageBps());
         requestMap.put("seed", seed);
         if (ranges != null) {
@@ -195,8 +212,8 @@ public class BacktestService {
             requestMap.put("rangeTruncated", rangeTruncated);
         }
 
-        return new Plan(bar, startMs, endMs, cutMs, marginUsd, topN, coins, combos, requestMap, request.label(),
-                request.strategyId());
+        return new Plan(bar, startMs, endMs, cutMs, marginUsd, accountCapitalUsd, topN, coins, combos, requestMap,
+                request.label(), request.strategyId());
     }
 
     /** 把自定义范围转成可 JSON 化的 map（写进 requestJson，便于日后对照复现）。 */
@@ -248,13 +265,14 @@ public class BacktestService {
                 return;
             }
 
-            List<Ranked> ranked = rank(combos, totals);
+            List<Ranked> ranked = rank(combos, totals, plan.accountCapitalUsd());
             int written = writeAggregates(runId, ranked);
             log.info("backtest {} coarse done: {} combo(s) ranked, {} written", runId, ranked.size(), written);
 
             if (canceled(runId)) {
                 return;
             }
+            // combos_done 写真实评估数（= 落库行数），前端进度条才和 combos_total 对齐
             repository.updateProgress(runId, "REFINE", plan.coins().size(), written);
             long bestResultId = refine(runId, plan, ranked);
             if (bestResultId > 0) {
@@ -286,14 +304,18 @@ public class BacktestService {
             int cut = cutIndex(bars, plan.cutMs());
             List<PriceBar> inSample = bars.subList(0, cut);
             List<PriceBar> outOfSample = bars.subList(cut, bars.size());
+            // 同一段的买入持有基准只算一次：策略与基准都按同一杠杆曝险比较，基准不计手续费/资金费
+            double isBenchPct = priceReturnPct(inSample);
+            double oosBenchPct = priceReturnPct(outOfSample);
             for (int i = 0; i < n; i++) {
                 StrategyParams params = combos.get(i);
                 if (inSample.size() >= 2) {
-                    local[i].addInSample(MartingaleBacktester.run(inSample, params).metrics(), plan.marginUsd());
+                    local[i].addInSample(MartingaleBacktester.run(inSample, params).metrics(), plan.marginUsd(),
+                            isBenchPct, params.leverage());
                 }
                 if (outOfSample.size() >= 2) {
                     local[i].addOutOfSample(MartingaleBacktester.run(outOfSample, params).metrics(),
-                            plan.marginUsd());
+                            plan.marginUsd(), oosBenchPct, params.leverage());
                 }
             }
         } catch (RuntimeException ex) {
@@ -304,7 +326,24 @@ public class BacktestService {
                 totals[i].merge(local[i]);
             }
         }
-        coinDone.incrementAndGet();
+        int done = coinDone.incrementAndGet();
+        // 粗筛每跑完一个币回报一次：组数按「所有币都跑过的组」折算，
+        // 上万组的大批次不会再出现「进度条一直 0、最后一次性跳到 N/N」。
+        int groupsDone = (int) Math.round((double) n * done / Math.max(1, plan.coins().size()));
+        repository.updateProgress(runId, "COARSE", done, Math.min(groupsDone, n));
+    }
+
+    /** 一段行情的买入持有收益率（%，首根收盘 → 末根收盘）。样本不足 2 根返回 0。 */
+    private static double priceReturnPct(List<PriceBar> bars) {
+        if (bars == null || bars.size() < 2) {
+            return 0d;
+        }
+        double first = bars.get(0).close();
+        double last = bars.get(bars.size() - 1).close();
+        if (!(first > 0d) || !(last > 0d)) {
+            return 0d;
+        }
+        return (last / first - 1d) * 100d;
     }
 
     private int cutIndex(List<PriceBar> bars, long cutMs) {
@@ -321,30 +360,46 @@ public class BacktestService {
         return Math.max(1, Math.min(lo, bars.size() - 1));
     }
 
-    private List<Ranked> rank(List<StrategyParams> combos, Aggregate[] totals) {
+    /**
+     * 目标组合数：显式请求优先，其次默认抽样数，最后全网格；{@code maxCombos <= 0} 表示不设上限。
+     *
+     * <p>结果始终落在 {@code [1, gridSize]}：所谓"不设上限"也不会超过网格本身，而网格规模另有
+     * {@code ParamRanges.DEFAULT_EXPAND_LIMIT} 的内存护栏。</p>
+     */
+    static int wantCombos(Integer requested, int defaultSampleSize, int maxCombos, int gridSize) {
+        int grid = Math.max(1, gridSize);
+        int upper = maxCombos > 0 ? Math.min(maxCombos, grid) : grid;
+        int want = requested != null && requested > 0 ? requested
+                : defaultSampleSize > 0 ? defaultSampleSize : grid;
+        return Math.max(1, Math.min(want, upper));
+    }
+
+    private List<Ranked> rank(List<StrategyParams> combos, Aggregate[] totals, double accountCapitalUsd) {
         List<Ranked> ranked = new ArrayList<>(combos.size());
         for (int i = 0; i < combos.size(); i++) {
-            ranked.add(new Ranked(combos.get(i), totals[i].summary()));
+            ranked.add(new Ranked(combos.get(i), totals[i].summary(accountCapitalUsd)));
         }
         ranked.sort(Comparator.comparingDouble((Ranked r) -> -r.summary().score())
                 .thenComparingDouble(r -> -r.summary().meanOutOfSampleReturnPct()));
         return ranked;
     }
 
+    /** 全部排名结果一次落库（不再截断）：批量 INSERT，几千行也只是几次 round-trip。 */
     private int writeAggregates(long runId, List<Ranked> ranked) {
-        int limit = Math.min(ranked.size(), MAX_RESULT_ROWS);
-        for (int i = 0; i < limit; i++) {
-            Ranked item = ranked.get(i);
-            int rank = i + 1;
+        List<BacktestRepository.ResultInsert> rows = new ArrayList<>(ranked.size());
+        int rank = 0;
+        for (Ranked item : ranked) {
+            rank++;
             Summary s = item.summary();
-            repository.insertResult(runId, new BacktestRepository.ResultInsert(item.params().key(),
+            rows.add(new BacktestRepository.ResultInsert(item.params().key(),
                     objectMapper.writeValueAsString(item.params()), null, "ALL",
                     objectMapper.writeValueAsString(metricsJson(s)), s.coins(), s.inSampleTrades(), s.winRate(),
                     round2(s.netPnl()), round2(s.meanInSampleReturnPct()), round2(s.meanInSampleDrawdownPct()),
                     round2(s.meanInSampleSharpe()), s.liquidations(), round2(s.meanOutOfSampleReturnPct()),
                     s.verdict(), rank));
         }
-        return limit;
+        repository.insertResults(runId, rows);
+        return rows.size();
     }
 
     private Map<String, Object> metricsJson(Summary s) {
@@ -363,7 +418,29 @@ public class BacktestService {
         out.put("trades", s.outOfSampleTrades());
         metrics.put("outOfSample", out);
         metrics.put("coins", s.coins());
-        metrics.put("benchmark", "score = 0.6*IS + 0.4*OOS - 0.3*ISdd");
+        metrics.put("oosCoins", s.oosCoins());
+        // 基准：同窗口买入持有（按该组合杠杆放大，不计手续费/资金费）。
+        // 只有 excess（策略 − 基准）为正，才说明这套马丁不是在单纯吃行情 beta。
+        Map<String, Object> bench = new LinkedHashMap<>();
+        bench.put("inSampleBuyHoldPct", round2(s.meanInSampleBenchmarkPct()));
+        bench.put("outOfSampleBuyHoldPct", round2(s.meanOutOfSampleBenchmarkPct()));
+        bench.put("inSampleExcessPct", round2(s.meanInSampleExcessPct()));
+        bench.put("outOfSampleExcessPct", round2(s.meanOutOfSampleExcessPct()));
+        bench.put("inSampleCapitalReturnPct", round2(s.meanInSampleCapitalReturnPct()));
+        bench.put("outOfSampleCapitalReturnPct", round2(s.meanOutOfSampleCapitalReturnPct()));
+        metrics.put("benchmark", bench);
+        metrics.put("excessPct", round2(s.meanOutOfSampleExcessPct()));
+        // 共享账户：各币峰值保证金之和 vs 账户权益 × 95%（同时满仓的上界，保守）
+        Map<String, Object> portfolio = new LinkedHashMap<>();
+        portfolio.put("peakMarginUsd", round2(s.portfolioPeakMarginUsd()));
+        portfolio.put("note", "各币峰值已用保证金之和（同时满仓上界），需 <= 账户权益 × 95% 才够格上影子");
+        metrics.put("portfolio", portfolio);
+        metrics.put("scoreFormula", "score = 0.6*ISexcess + 0.4*OOSexcess - 0.3*ISdd");
+        metrics.put("verdictRule",
+                "CANDIDATE 需同时满足：IS 成交 ≥ " + MIN_TRADES + "、IS 收益 > 0、OOS 收益 > 0、OOS 成交 ≥ "
+                        + MIN_OOS_TRADES + "、OOS 回撤 < " + (int) MAX_OOS_DRAWDOWN_PCT + "%、IS 回撤 < "
+                        + (int) MAX_IS_DRAWDOWN_PCT + "%、OOS 超额收益 > 0、强平次数 = 0、组合峰值保证金 ≤ "
+                        + "账户权益 × 95%");
         return metrics;
     }
 
@@ -389,9 +466,9 @@ public class BacktestService {
                 long resultId = repository.insertResult(runId, new BacktestRepository.ResultInsert(
                         item.params().key(), objectMapper.writeValueAsString(item.params()), instId, "COIN",
                         objectMapper.writeValueAsString(Map.of("metrics", m)), 1, m.trades(), m.winRate(),
-                        // net_pnl 是美元列，net_pnl_pct 是百分数列；两者不能同值。
-                        // 回测器只产出 returnPct（realized / margin × 100），这里按本金反推美元，口径与聚合行一致。
-                        round2(m.returnPct() / 100d * item.params().initialMarginUsd()), round2(m.returnPct()),
+                        // net_pnl 是美元列：直接用引擎的已实现盈亏，不再用 returnPct 反推
+                        // （F6 之后 returnPct 的分母是峰值已用保证金，反推会随层数失真）。
+                        round2(m.netPnlUsd()), round2(m.returnPct()),
                         round2(m.maxDrawdownPct()),
                         round2(m.sharpe()), m.liquidations(), null, "COIN", null));
                 if (champion) {
@@ -404,12 +481,7 @@ public class BacktestService {
     }
 
     private long aggregateId(long runId, String paramKey) {
-        for (BacktestResultRow row : repository.listResults(runId, MAX_RESULT_ROWS)) {
-            if (row.paramKey().equals(paramKey)) {
-                return row.id();
-            }
-        }
-        return 0;
+        return repository.findResultIdByParamKey(runId, paramKey);
     }
 
     // ------------------------------------------------------------------ 查询
@@ -522,19 +594,76 @@ public class BacktestService {
                 ? "bt-" + runId + "-" + Integer.toHexString(target.paramKey().hashCode())
                 : name.trim();
         double margin = 100d;
+        double accountCapital = 0d;
         try {
             JsonNode params = objectMapper.readTree(target.params());
             JsonNode m = params == null ? null : params.get("initialMarginUsd");
             if (m != null && m.isNumber()) {
                 margin = m.asDouble();
             }
+            JsonNode c = params == null ? null : params.get("accountCapitalUsd");
+            if (c != null && c.isNumber()) {
+                accountCapital = c.asDouble();
+            }
         } catch (RuntimeException ex) {
             log.warn("params json of result {} unreadable: {}", target.id(), ex.toString());
         }
+        if (!(accountCapital > 0d)) {
+            accountCapital = margin;
+        }
+        // 账户权益必须覆盖回测里真正用掉的峰值保证金：否则加仓闸门会把回测开过的层全部禁掉，
+        // 推荐出来的参数在影子里一层也加不动（"回测 8 层 / 影子 1 层"的对不上）。
+        // 闸门只放行到权益的 95%，所以峰值要除以 LAYER_HEADROOM 才能真的重新占用到那个水位
+        // （新批次自带的 accountCapitalUsd 已满足该不等式，这里只对旧批次结果起作用）。
+        double peak = recommendedCapital(run, target, 0d);
+        double recommended = Math.max(accountCapital,
+                peak > 0d ? round2(peak / ShadowMath.LAYER_HEADROOM) : 0d);
+        if (recommended > accountCapital) {
+            log.info("promote result {}: accountCapitalUsd {} -> {} (peak margin of backtest)", target.id(),
+                    accountCapital, recommended);
+            accountCapital = recommended;
+        }
         String universe = objectMapper.writeValueAsString(Map.of("instIds", coinsOf(run)));
-        long strategyId = repository.promoteStrategy(strategyName, target.params(), universe, margin, runId,
+        // 列与参数必须一致：capitalPerCoinUsd 表示"这一币能动用的账户权益"，写进 params.accountCapitalUsd；
+        // initialMarginUsd 是每笔首层预算，保持回测时的值不动（改了首层名义就和回测脱节）。
+        String paramsJson = target.params();
+        if (accountCapital > 0d) {
+            try {
+                ObjectNode node = (ObjectNode) objectMapper.readTree(paramsJson);
+                node.put("accountCapitalUsd", accountCapital);
+                paramsJson = objectMapper.writeValueAsString(node);
+            } catch (RuntimeException ex) {
+                log.warn("params json of result {} not rewritable: {}", target.id(), ex.toString());
+            }
+        }
+        long strategyId = repository.promoteStrategy(strategyName, paramsJson, universe, accountCapital, runId,
                 note == null || note.isBlank() ? "promoted from backtest run " + runId : note);
         return repository.findStrategy(strategyId);
+    }
+
+    /**
+     * 回测里该组合逐币的峰值已用保证金（F6：{@code returnPct = netPnl / peakMarginUsed}），取各币最大值。
+     *
+     * <p>逐币行同时存了 {@code net_pnl} 与 {@code net_pnl_pct}，反算即可拿到当时的峰值占用，
+     * 不必把 90 天 1m 序列重新读一遍。反算不到（收益为负）时返回 {@code fallback}。</p>
+     */
+    private double recommendedCapital(BacktestRunRow run, BacktestResultRow target, double fallback) {
+        try {
+            List<BacktestResultRow> coins = repository.listCoinResultsByKey(run.id(), target.paramKey(), MAX_COINS);
+            double peak = 0d;
+            for (BacktestResultRow coin : coins) {
+                Double pnl = coin.netPnl();
+                Double pct = coin.netPnlPct();
+                if (pnl == null || pct == null || pnl <= 0d || pct <= 0d) {
+                    continue;
+                }
+                peak = Math.max(peak, pnl / pct * 100d);
+            }
+            return peak > 0d ? round2(peak) : fallback;
+        } catch (RuntimeException ex) {
+            log.warn("peak margin of result {} unreadable: {}", target.id(), ex.toString());
+            return fallback;
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -568,8 +697,8 @@ public class BacktestService {
 
     // ---------------------------------------------------------------- 值类型
 
-    private record Plan(String bar, long startMs, long endMs, long cutMs, double marginUsd, int topN,
-            List<String> coins, List<StrategyParams> combos, Map<String, Object> request, String label,
+    private record Plan(String bar, long startMs, long endMs, long cutMs, double marginUsd, double accountCapitalUsd,
+            int topN, List<String> coins, List<StrategyParams> combos, Map<String, Object> request, String label,
             Long strategyId) {
     }
 
@@ -587,9 +716,21 @@ public class BacktestService {
         int oosTrades;
         int isWins;
         int coins;
+        int oosCoins;
         int liquidations;
+        /** 按「初始保证金」口径的收益率（与买入持有基准同分母）。 */
+        double isCapitalSum;
+        double oosCapitalSum;
+        /** 同期买入持有收益（已按该组合杠杆放大，近似同曝险）%。 */
+        double isBenchSum;
+        double oosBenchSum;
+        /**
+         * 各币**峰值已用保证金**之和（样本内）：这是"同时满仓"的上界，用来回答
+         * "这套参数在共享账户里到底开不开得出来"。旧版每个币各算各的权益，加起来才暴露超配。
+         */
+        double isPeakMarginSum;
 
-        void addInSample(BacktestMetrics m, double margin) {
+        void addInSample(BacktestMetrics m, double margin, double priceReturnPct, double leverage) {
             if (m.trades() <= 0) {
                 return;
             }
@@ -599,15 +740,23 @@ public class BacktestService {
             isReturnSum += m.returnPct();
             isDrawdownSum += m.maxDrawdownPct();
             isSharpeSum += m.sharpe();
-            isPnlSum += m.returnPct() / 100d * margin;
+            isPnlSum += m.netPnlUsd();
             liquidations += m.liquidations();
+            isCapitalSum += margin <= 0d ? 0d : m.netPnlUsd() / margin * 100d;
+            isBenchSum += priceReturnPct * leverage;
+            isPeakMarginSum += peakMarginOf(m);
         }
 
-        void addOutOfSample(BacktestMetrics m, double margin) {
+        void addOutOfSample(BacktestMetrics m, double margin, double priceReturnPct, double leverage) {
+            // OOS 样本数必须独立统计（F9）：只有 IS 有成交的币不能当 OOS 的分母，
+            // 否则"OOS 正收益"只是"少数 OOS 有成交的币"的均值，系统性高估。
+            oosCoins++;
             oosTrades += m.trades();
             oosReturnSum += m.returnPct();
             oosDrawdownSum += m.maxDrawdownPct();
-            oosPnlSum += m.returnPct() / 100d * margin;
+            oosPnlSum += m.netPnlUsd();
+            oosCapitalSum += margin <= 0d ? 0d : m.netPnlUsd() / margin * 100d;
+            oosBenchSum += priceReturnPct * leverage;
         }
 
         void merge(Aggregate other) {
@@ -620,35 +769,88 @@ public class BacktestService {
             oosPnlSum += other.oosPnlSum;
             isTrades += other.isTrades;
             oosTrades += other.oosTrades;
+            oosCoins += other.oosCoins;
             isWins += other.isWins;
             coins += other.coins;
             liquidations += other.liquidations;
+            isCapitalSum += other.isCapitalSum;
+            oosCapitalSum += other.oosCapitalSum;
+            isBenchSum += other.isBenchSum;
+            oosBenchSum += other.oosBenchSum;
+            isPeakMarginSum += other.isPeakMarginSum;
         }
 
-        Summary summary() {
+        /** 该币的峰值已用保证金：从 returnPct 的原始分母反推（净盈亏 / 收益率 × 100），推不出按 0。 */
+        private static double peakMarginOf(BacktestMetrics m) {
+            double pnl = Math.abs(m.netPnlUsd());
+            double ret = Math.abs(m.returnPct());
+            return ret > 0d && pnl > 0d && Double.isFinite(pnl / ret) ? pnl / ret * 100d : 0d;
+        }
+
+        Summary summary(double accountCapitalUsd) {
             double isReturn = coins == 0 ? 0d : isReturnSum / coins;
             double isDrawdown = coins == 0 ? 0d : isDrawdownSum / coins;
-            double oosReturn = coins == 0 ? 0d : oosReturnSum / coins;
-            double oosDrawdown = coins == 0 ? 0d : oosDrawdownSum / coins;
+            // F9：OOS 用自己样本数做分母；用 IS 的 coins 会把"没有 OOS 成交的币"当成 0 收益混进来以外的
+            // 相反问题——只有 IS 有成交的币计入分母，少数 OOS 有成交的币被放大。
+            double oosReturn = oosCoins == 0 ? 0d : oosReturnSum / oosCoins;
+            double oosDrawdown = oosCoins == 0 ? 0d : oosDrawdownSum / oosCoins;
             double winRate = isTrades == 0 ? 0d : isWins * 100d / isTrades;
-            double score = 0.6d * isReturn + 0.4d * oosReturn - 0.3d * isDrawdown;
-            String verdict;
-            if (isTrades < MIN_TRADES) {
-                verdict = "INSUFFICIENT";
-            } else if (isReturn > 0 && oosReturn > 0) {
-                verdict = "CANDIDATE";
-            } else {
-                verdict = "REJECT";
-            }
+            // 收益全部按「初始保证金」口径与买入持有基准比较：原来 returnPct 的分母是峰值已用保证金，
+            // 层数越多分母越大，基准又不存在，于是"杠杆堆出来的一条单边行情"总能拿最高分。
+            double isCapital = coins == 0 ? 0d : isCapitalSum / coins;
+            double isBench = coins == 0 ? 0d : isBenchSum / coins;
+            double oosCapital = oosCoins == 0 ? 0d : oosCapitalSum / oosCoins;
+            double oosBench = oosCoins == 0 ? 0d : oosBenchSum / oosCoins;
+            double isExcess = isCapital - isBench;
+            double oosExcess = oosCapital - oosBench;
+            double score = 0.6d * isExcess + 0.4d * oosExcess - 0.3d * isDrawdown;
+            String verdict = verdictFor(isTrades, isReturn, oosReturn, oosTrades, oosDrawdown, liquidations,
+                    isDrawdown, oosExcess, isPeakMarginSum, accountCapitalUsd);
             return new Summary(score, isReturn, isDrawdown, coins == 0 ? 0d : isSharpeSum / coins, winRate,
-                    isPnlSum, isTrades, oosTrades, oosReturn, oosDrawdown, liquidations, coins, verdict);
+                    isPnlSum, isTrades, oosTrades, oosReturn, oosDrawdown, liquidations, coins, oosCoins, verdict,
+                    isCapital, oosCapital, isBench, oosBench, isExcess, oosExcess, isPeakMarginSum);
         }
+    }
+
+    /**
+     * CANDIDATE 判定（可单测的纯函数）。
+     *
+     * <p>六条件同时成立才够格进影子（方案 §2.7 + 基准 / IS 回撤两道闸门）：只看收益正负，
+     * 会把"凑巧翻正"或"单纯吃到单边行情 beta"的组合推上实盘。</p>
+     */
+    static String verdictFor(int isTrades, double isReturn, double oosReturn, int oosTrades, double oosDrawdown,
+            int liquidations, double isDrawdown, double oosExcess) {
+        return verdictFor(isTrades, isReturn, oosReturn, oosTrades, oosDrawdown, liquidations, isDrawdown, oosExcess,
+                0d, 0d);
+    }
+
+    /**
+     * 带共享账户约束的判定：{@code portfolioPeakMarginUsd} 是各币峰值已用保证金之和（同时满仓的上界），
+     * 必须落在 {@code accountCapitalUsd × 95%} 以内——否则这套参数在真实账户里根本开不出来，
+     * 收益再漂亮也只是纸上仓位。{@code accountCapitalUsd <= 0} 视为未给约束（保持旧行为）。
+     */
+    static String verdictFor(int isTrades, double isReturn, double oosReturn, int oosTrades, double oosDrawdown,
+            int liquidations, double isDrawdown, double oosExcess, double portfolioPeakMarginUsd,
+            double accountCapitalUsd) {
+        if (isTrades < MIN_TRADES) {
+            return "INSUFFICIENT";
+        }
+        boolean fitsAccount = !(accountCapitalUsd > 0d)
+                || ShadowMath.allowsLayer(accountCapitalUsd, 0d, 0d, portfolioPeakMarginUsd);
+        if (isReturn > 0d && oosReturn > 0d && oosTrades >= MIN_OOS_TRADES
+                && oosDrawdown < MAX_OOS_DRAWDOWN_PCT && liquidations == 0
+                && isDrawdown < MAX_IS_DRAWDOWN_PCT && oosExcess > 0d && fitsAccount) {
+            return "CANDIDATE";
+        }
+        return "REJECT";
     }
 
     private record Summary(double score, double meanInSampleReturnPct, double meanInSampleDrawdownPct,
             double meanInSampleSharpe, double winRate, double netPnl, int inSampleTrades, int outOfSampleTrades,
             double meanOutOfSampleReturnPct, double meanOutOfSampleDrawdownPct, int liquidations, int coins,
-            String verdict) {
+            int oosCoins, String verdict, double meanInSampleCapitalReturnPct, double meanOutOfSampleCapitalReturnPct,
+            double meanInSampleBenchmarkPct, double meanOutOfSampleBenchmarkPct, double meanInSampleExcessPct,
+            double meanOutOfSampleExcessPct, double portfolioPeakMarginUsd) {
 
         double coinWinRatePct() {
             return winRate;

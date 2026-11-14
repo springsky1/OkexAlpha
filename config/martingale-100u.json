@@ -1,0 +1,935 @@
+{
+  "name": "martingale-100u-min-notional-grid",
+  "generatedAt": "2026-11-07T14:42:38+08:00",
+  "account": {
+    "ccy": "USDT",
+    "mode": "SHADOW",
+    "credentialSource": "db",
+    "acctLv": 2,
+    "posMode": "long_short_mode",
+    "perm": [
+      "read_only",
+      "trade"
+    ],
+    "totalEqUsd": 947.1108926214816,
+    "availBalUsd": 90.27123346585422,
+    "frozenBalUsd": 851.2623014328219,
+    "isoEqUsd": 6.7948199784,
+    "snapshotAt": "2026-11-07T14:30+08:00"
+  },
+  "budget": {
+    "targetUsd": 100.0,
+    "availableUsd": 90.27123346585422,
+    "reservePct": 20.0,
+    "deployableUsd": 72.22,
+    "hardCapUsd": 90.27123346585422
+  },
+  "window": {
+    "bar": "1H",
+    "startMs": 1767196800000,
+    "endMs": 1794031200000,
+    "startLocal": "2026-01-01T00:00:00+08:00",
+    "endLocal": "2026-11-07T23:00:00+08:00",
+    "note": "endMs 为右开区间；1H 数据末端 2026-11-07 23:00(+08)"
+  },
+  "costs": {
+    "feeTaker": 0.0005,
+    "slippageBps": 2.0,
+    "fundingPer8hPct": 0.01,
+    "maxHoldHours": 48,
+    "maintenanceMarginRate": 0.005
+  },
+  "engine": {
+    "combos": 216,
+    "topN": 20,
+    "seed": 20261107,
+    "coinLimit": 1,
+    "minTrades": 10,
+    "minOosTrades": 30,
+    "maxOosDrawdownPct": 25.0,
+    "inSampleRatio": 0.7
+  },
+  "ranges": {
+    "leverage": {
+      "min": 3,
+      "max": 10,
+      "step": 2,
+      "note": "按批次固定为 3/5/10 之一"
+    },
+    "maxLayers": {
+      "min": 3,
+      "max": 8,
+      "step": 2
+    },
+    "layerStepPct": {
+      "min": 1.5,
+      "max": 4.5,
+      "step": 1.5
+    },
+    "layerScale": {
+      "min": 1.0,
+      "max": 2.0,
+      "step": 0.5
+    },
+    "takeProfitPct": {
+      "min": 1.0,
+      "max": 3.0,
+      "step": 1.0
+    },
+    "stopLossPct": {
+      "min": 15.0,
+      "max": 25.0,
+      "step": 10.0
+    },
+    "sides": [
+      "long",
+      "short"
+    ]
+  },
+  "marginRule": {
+    "initialMarginUsd": "minNotionalUsd / leverage  (第 1 层名义 = 平台最小下单额)",
+    "strategyMaxMarginUsd": "initialMarginUsd * sum(layerScale^(i-1), i=1..maxLayers)"
+  },
+  "coins": [
+    {
+      "instId": "FIL-USDT-SWAP",
+      "ctVal": 0.1,
+      "ctValCcy": "FIL",
+      "lotSz": 1.0,
+      "minSz": 1.0,
+      "tickSz": 0.0001,
+      "refPx": 0.8077,
+      "notionalPerContractUsd": 0.08077000000000001,
+      "minNotionalUsd": 0.08077000000000001,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.807135+08",
+      "funding": {
+        "avg8h": 3.720647995474591e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "OP-USDT-SWAP",
+      "ctVal": 1.0,
+      "ctValCcy": "OP",
+      "lotSz": 1.0,
+      "minSz": 1.0,
+      "tickSz": 1e-05,
+      "refPx": 0.10448,
+      "notionalPerContractUsd": 0.10448,
+      "minNotionalUsd": 0.10448,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.820516+08",
+      "funding": {
+        "avg8h": 3.4240055068924604e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "WIF-USDT-SWAP",
+      "ctVal": 1.0,
+      "ctValCcy": "WIF",
+      "lotSz": 1.0,
+      "minSz": 1.0,
+      "tickSz": 0.0001,
+      "refPx": 0.1623,
+      "notionalPerContractUsd": 0.1623,
+      "minNotionalUsd": 0.1623,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.820516+08",
+      "funding": {
+        "avg8h": 3.9087433337659254e-05,
+        "points": 611,
+        "fromMs": 1785153600000,
+        "toMs": 1793937600000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "ARB-USDT-SWAP",
+      "ctVal": 10.0,
+      "ctValCcy": "ARB",
+      "lotSz": 0.1,
+      "minSz": 0.1,
+      "tickSz": 1e-05,
+      "refPx": 0.16608,
+      "notionalPerContractUsd": 1.6608,
+      "minNotionalUsd": 0.16608,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.807135+08",
+      "funding": {
+        "avg8h": 1.5128128768273772e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "CRV-USDT-SWAP",
+      "ctVal": 1.0,
+      "ctValCcy": "CRV",
+      "lotSz": 1.0,
+      "minSz": 1.0,
+      "tickSz": 0.0001,
+      "refPx": 0.2648,
+      "notionalPerContractUsd": 0.2648,
+      "minNotionalUsd": 0.2648,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.807135+08",
+      "funding": {
+        "avg8h": 6.162995034014524e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "BONK-USDT-SWAP",
+      "ctVal": 100000.0,
+      "ctValCcy": "BONK",
+      "lotSz": 1.0,
+      "minSz": 1.0,
+      "tickSz": 1e-09,
+      "refPx": 2.821e-06,
+      "notionalPerContractUsd": 0.2821,
+      "minNotionalUsd": 0.2821,
+      "maxLeverage": 20,
+      "specRefreshedAt": "2026-11-07 14:35:17.807135+08",
+      "funding": {
+        "avg8h": 3.5165318265440654e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "ORDI-USDT-SWAP",
+      "ctVal": 0.1,
+      "ctValCcy": "ORDI",
+      "lotSz": 1.0,
+      "minSz": 1.0,
+      "tickSz": 0.001,
+      "refPx": 3.271,
+      "notionalPerContractUsd": 0.3271,
+      "minNotionalUsd": 0.3271,
+      "maxLeverage": 20,
+      "specRefreshedAt": "2026-11-07 14:35:17.820516+08",
+      "funding": {
+        "avg8h": 3.676525793851472e-05,
+        "points": 611,
+        "fromMs": 1785153600000,
+        "toMs": 1793937600000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "WLD-USDT-SWAP",
+      "ctVal": 1.0,
+      "ctValCcy": "WLD",
+      "lotSz": 1.0,
+      "minSz": 1.0,
+      "tickSz": 0.0001,
+      "refPx": 0.3399,
+      "notionalPerContractUsd": 0.3399,
+      "minNotionalUsd": 0.3399,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.820516+08",
+      "funding": {
+        "avg8h": 4.0447044153057384e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "TIA-USDT-SWAP",
+      "ctVal": 1.0,
+      "ctValCcy": "TIA",
+      "lotSz": 1.0,
+      "minSz": 1.0,
+      "tickSz": 0.0001,
+      "refPx": 0.4383,
+      "notionalPerContractUsd": 0.4383,
+      "minNotionalUsd": 0.4383,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.820516+08",
+      "funding": {
+        "avg8h": 5.91325390898871e-06,
+        "points": 611,
+        "fromMs": 1785153600000,
+        "toMs": 1793937600000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "SHIB-USDT-SWAP",
+      "ctVal": 1000000.0,
+      "ctValCcy": "SHIB",
+      "lotSz": 0.1,
+      "minSz": 0.1,
+      "tickSz": 1e-09,
+      "refPx": 4.513e-06,
+      "notionalPerContractUsd": 4.513,
+      "minNotionalUsd": 0.45130000000000003,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.820516+08",
+      "funding": {
+        "avg8h": 5.951915907407444e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "SEI-USDT-SWAP",
+      "ctVal": 10.0,
+      "ctValCcy": "SEI",
+      "lotSz": 1.0,
+      "minSz": 1.0,
+      "tickSz": 1e-05,
+      "refPx": 0.0461,
+      "notionalPerContractUsd": 0.461,
+      "minNotionalUsd": 0.461,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.820516+08",
+      "funding": {
+        "avg8h": 1.240914771295925e-05,
+        "points": 611,
+        "fromMs": 1785153600000,
+        "toMs": 1793937600000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "APT-USDT-SWAP",
+      "ctVal": 1.0,
+      "ctValCcy": "APT",
+      "lotSz": 1.0,
+      "minSz": 1.0,
+      "tickSz": 0.0001,
+      "refPx": 0.6008,
+      "notionalPerContractUsd": 0.6008,
+      "minNotionalUsd": 0.6008,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.807135+08",
+      "funding": {
+        "avg8h": 2.7455409302940005e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "ETC-USDT-SWAP",
+      "ctVal": 10.0,
+      "ctValCcy": "ETC",
+      "lotSz": 0.01,
+      "minSz": 0.01,
+      "tickSz": 0.001,
+      "refPx": 6.964,
+      "notionalPerContractUsd": 69.64,
+      "minNotionalUsd": 0.6964,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.807135+08",
+      "funding": {
+        "avg8h": 4.1972939600753116e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "DOGE-USDT-SWAP",
+      "ctVal": 1000.0,
+      "ctValCcy": "DOGE",
+      "lotSz": 0.01,
+      "minSz": 0.01,
+      "tickSz": 1e-05,
+      "refPx": 0.07192,
+      "notionalPerContractUsd": 71.92,
+      "minNotionalUsd": 0.7192000000000001,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.807135+08",
+      "funding": {
+        "avg8h": 6.131278226121575e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7455,
+        "firstMs": 1767196800000,
+        "lastMs": 1794031200000
+      }
+    },
+    {
+      "instId": "INJ-USDT-SWAP",
+      "ctVal": 0.1,
+      "ctValCcy": "INJ",
+      "lotSz": 1.0,
+      "minSz": 1.0,
+      "tickSz": 0.001,
+      "refPx": 8.22,
+      "notionalPerContractUsd": 0.8220000000000001,
+      "minNotionalUsd": 0.8220000000000001,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.807135+08",
+      "funding": {
+        "avg8h": 1.1373489205798034e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "AVAX-USDT-SWAP",
+      "ctVal": 1.0,
+      "ctValCcy": "AVAX",
+      "lotSz": 0.1,
+      "minSz": 0.1,
+      "tickSz": 0.001,
+      "refPx": 8.32,
+      "notionalPerContractUsd": 8.32,
+      "minNotionalUsd": 0.8320000000000001,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.807135+08",
+      "funding": {
+        "avg8h": 3.972282995394722e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "SUI-USDT-SWAP",
+      "ctVal": 1.0,
+      "ctValCcy": "SUI",
+      "lotSz": 1.0,
+      "minSz": 1.0,
+      "tickSz": 0.0001,
+      "refPx": 0.8692,
+      "notionalPerContractUsd": 0.8692,
+      "minNotionalUsd": 0.8692,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.820516+08",
+      "funding": {
+        "avg8h": 5.422930175615181e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "SOL-USDT-SWAP",
+      "ctVal": 1.0,
+      "ctValCcy": "SOL",
+      "lotSz": 0.01,
+      "minSz": 0.01,
+      "tickSz": 0.01,
+      "refPx": 90.12,
+      "notionalPerContractUsd": 90.12,
+      "minNotionalUsd": 0.9012000000000001,
+      "maxLeverage": 100,
+      "specRefreshedAt": "2026-11-07 14:35:17.820516+08",
+      "funding": {
+        "avg8h": 3.334088096571115e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7455,
+        "firstMs": 1767196800000,
+        "lastMs": 1794031200000
+      }
+    },
+    {
+      "instId": "DOT-USDT-SWAP",
+      "ctVal": 1.0,
+      "ctValCcy": "DOT",
+      "lotSz": 1.0,
+      "minSz": 1.0,
+      "tickSz": 0.0001,
+      "refPx": 0.908,
+      "notionalPerContractUsd": 0.908,
+      "minNotionalUsd": 0.908,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.807135+08",
+      "funding": {
+        "avg8h": 2.547197998928689e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "LINK-USDT-SWAP",
+      "ctVal": 1.0,
+      "ctValCcy": "LINK",
+      "lotSz": 0.1,
+      "minSz": 0.1,
+      "tickSz": 0.001,
+      "refPx": 10.844,
+      "notionalPerContractUsd": 10.844,
+      "minNotionalUsd": 1.0844,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.820516+08",
+      "funding": {
+        "avg8h": 5.440104676868395e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "XRP-USDT-SWAP",
+      "ctVal": 100.0,
+      "ctValCcy": "XRP",
+      "lotSz": 0.01,
+      "minSz": 0.01,
+      "tickSz": 0.0001,
+      "refPx": 1.1645,
+      "notionalPerContractUsd": 116.45,
+      "minNotionalUsd": 1.1645,
+      "maxLeverage": 100,
+      "specRefreshedAt": "2026-11-07 14:35:17.827054+08",
+      "funding": {
+        "avg8h": 4.645950937279377e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7455,
+        "firstMs": 1767196800000,
+        "lastMs": 1794031200000
+      }
+    },
+    {
+      "instId": "AAVE-USDT-SWAP",
+      "ctVal": 0.1,
+      "ctValCcy": "AAVE",
+      "lotSz": 0.1,
+      "minSz": 0.1,
+      "tickSz": 0.01,
+      "refPx": 131.55,
+      "notionalPerContractUsd": 13.155000000000001,
+      "minNotionalUsd": 1.3155000000000001,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.807135+08",
+      "funding": {
+        "avg8h": 2.8639671441943283e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7345,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "ATOM-USDT-SWAP",
+      "ctVal": 1.0,
+      "ctValCcy": "ATOM",
+      "lotSz": 1.0,
+      "minSz": 1.0,
+      "tickSz": 0.001,
+      "refPx": 1.384,
+      "notionalPerContractUsd": 1.384,
+      "minNotionalUsd": 1.384,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.807135+08",
+      "funding": {
+        "avg8h": -5.073404817141049e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "ENA-USDT-SWAP",
+      "ctVal": 10.0,
+      "ctValCcy": "ENA",
+      "lotSz": 1.0,
+      "minSz": 1.0,
+      "tickSz": 1e-05,
+      "refPx": 0.16388,
+      "notionalPerContractUsd": 1.6388,
+      "minNotionalUsd": 1.6388,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.807135+08",
+      "funding": {
+        "avg8h": 3.0908759915332445e-05,
+        "points": 527,
+        "fromMs": 1785153600000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "ADA-USDT-SWAP",
+      "ctVal": 100.0,
+      "ctValCcy": "ADA",
+      "lotSz": 0.1,
+      "minSz": 0.1,
+      "tickSz": 0.0001,
+      "refPx": 0.1845,
+      "notionalPerContractUsd": 18.45,
+      "minNotionalUsd": 1.845,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.807135+08",
+      "funding": {
+        "avg8h": 4.664525130930919e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7345,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "ETH-USDT-SWAP",
+      "ctVal": 0.1,
+      "ctValCcy": "ETH",
+      "lotSz": 0.01,
+      "minSz": 0.01,
+      "tickSz": 0.01,
+      "refPx": 2244.9,
+      "notionalPerContractUsd": 224.49,
+      "minNotionalUsd": 2.2449000000000003,
+      "maxLeverage": 100,
+      "specRefreshedAt": "2026-11-07 14:35:17.807135+08",
+      "funding": {
+        "avg8h": 4.323055328723868e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7455,
+        "firstMs": 1767196800000,
+        "lastMs": 1794031200000
+      }
+    },
+    {
+      "instId": "JUP-USDT-SWAP",
+      "ctVal": 10.0,
+      "ctValCcy": "JUP",
+      "lotSz": 1.0,
+      "minSz": 1.0,
+      "tickSz": 0.0001,
+      "refPx": 0.2421,
+      "notionalPerContractUsd": 2.4210000000000003,
+      "minNotionalUsd": 2.4210000000000003,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.807135+08",
+      "funding": {
+        "avg8h": 9.646614415451228e-06,
+        "points": 611,
+        "fromMs": 1785153600000,
+        "toMs": 1793937600000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "BCH-USDT-SWAP",
+      "ctVal": 0.1,
+      "ctValCcy": "BCH",
+      "lotSz": 0.1,
+      "minSz": 0.1,
+      "tickSz": 0.01,
+      "refPx": 261.17,
+      "notionalPerContractUsd": 26.117000000000004,
+      "minNotionalUsd": 2.611700000000001,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.807135+08",
+      "funding": {
+        "avg8h": 4.3713888819776724e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "TRX-USDT-SWAP",
+      "ctVal": 1000.0,
+      "ctValCcy": "TRX",
+      "lotSz": 0.01,
+      "minSz": 0.01,
+      "tickSz": 1e-05,
+      "refPx": 0.31848,
+      "notionalPerContractUsd": 318.47999999999996,
+      "minNotionalUsd": 3.1847999999999996,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.820516+08",
+      "funding": {
+        "avg8h": -0.00015611837655772685,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "ONDO-USDT-SWAP",
+      "ctVal": 10.0,
+      "ctValCcy": "ONDO",
+      "lotSz": 1.0,
+      "minSz": 1.0,
+      "tickSz": 0.0001,
+      "refPx": 0.3697,
+      "notionalPerContractUsd": 3.6969999999999996,
+      "minNotionalUsd": 3.6969999999999996,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.820516+08",
+      "funding": {
+        "avg8h": 3.111076527422277e-05,
+        "points": 527,
+        "fromMs": 1785153600000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "NEAR-USDT-SWAP",
+      "ctVal": 10.0,
+      "ctValCcy": "NEAR",
+      "lotSz": 0.1,
+      "minSz": 0.1,
+      "tickSz": 0.001,
+      "refPx": 3.733,
+      "notionalPerContractUsd": 37.33,
+      "minNotionalUsd": 3.733,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.820516+08",
+      "funding": {
+        "avg8h": 5.5158159625217717e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7432,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "PEPE-USDT-SWAP",
+      "ctVal": 10000000.0,
+      "ctValCcy": "PEPE",
+      "lotSz": 0.1,
+      "minSz": 0.1,
+      "tickSz": 1e-10,
+      "refPx": 4.9289e-06,
+      "notionalPerContractUsd": 49.289,
+      "minNotionalUsd": 4.9289000000000005,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.820516+08",
+      "funding": {
+        "avg8h": 4.879518944074001e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7455,
+        "firstMs": 1767196800000,
+        "lastMs": 1794031200000
+      }
+    },
+    {
+      "instId": "LTC-USDT-SWAP",
+      "ctVal": 1.0,
+      "ctValCcy": "LTC",
+      "lotSz": 0.1,
+      "minSz": 0.1,
+      "tickSz": 0.01,
+      "refPx": 52.41,
+      "notionalPerContractUsd": 52.41,
+      "minNotionalUsd": 5.241,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.820516+08",
+      "funding": {
+        "avg8h": 5.6099498517603946e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7333,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "UNI-USDT-SWAP",
+      "ctVal": 1.0,
+      "ctValCcy": "UNI",
+      "lotSz": 1.0,
+      "minSz": 1.0,
+      "tickSz": 0.001,
+      "refPx": 6.998,
+      "notionalPerContractUsd": 6.998,
+      "minNotionalUsd": 6.998,
+      "maxLeverage": 50,
+      "specRefreshedAt": "2026-11-07 14:35:17.820516+08",
+      "funding": {
+        "avg8h": 6.507499659145214e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7412,
+        "firstMs": 1767196800000,
+        "lastMs": 1793948400000
+      }
+    },
+    {
+      "instId": "BTC-USDT-SWAP",
+      "ctVal": 0.01,
+      "ctValCcy": "BTC",
+      "lotSz": 0.01,
+      "minSz": 0.01,
+      "tickSz": 0.1,
+      "refPx": 75988.9,
+      "notionalPerContractUsd": 759.889,
+      "minNotionalUsd": 7.59889,
+      "maxLeverage": 100,
+      "specRefreshedAt": "2026-11-07 14:35:17.807135+08",
+      "funding": {
+        "avg8h": 5.596332128150721e-05,
+        "points": 305,
+        "fromMs": 1785168000000,
+        "toMs": 1793923200000
+      },
+      "kline1H": {
+        "bars": 7455,
+        "firstMs": 1767196800000,
+        "lastMs": 1794031200000
+      }
+    }
+  ]
+}

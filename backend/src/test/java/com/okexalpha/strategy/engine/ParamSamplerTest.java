@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 class ParamSamplerTest {
 
     private static final StrategyParams BASE = new StrategyParams(StrategyParams.LONG, 100d, 5, 5, 2.5d, 1.0d,
-            2.0d, 25.0d, 48, 0.0005d, 0.01d, 2.0d);
+            2.0d, 25.0d, 48, 0.0005d, 0.0002d, 0.01d, 2.0d, 10_000d);
 
     @Test
     @DisplayName("全网格 648 组（3×3×3×2×3×2×2），固定维度全部沿用基准")

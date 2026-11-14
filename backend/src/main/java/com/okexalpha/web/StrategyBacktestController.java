@@ -56,7 +56,7 @@ public class StrategyBacktestController {
     public ResponseEntity<ApiResponse<Map<String, Object>>> submit(@RequestBody(required = false) BacktestRequest request) {
         long runId = backtestService.submit(request == null
                 ? new BacktestRequest(null, null, null, null, null, null, null, null, null, null, null, null, null,
-                        null)
+                        null, null)
                 : request);
         BacktestRunRow run = backtestService.detail(runId).get("run") instanceof BacktestRunRow row ? row : null;
         Map<String, Object> body = new LinkedHashMap<>();
@@ -77,8 +77,9 @@ public class StrategyBacktestController {
     /**
      * 参数范围预设目录，附当前上限：前端 chips 与提交前的组合数提示都基于这份数据。
      *
-     * <p>注意：预设组合数只按 6 个维度精确计算，可能大于 maxCombos；
-     * 提交时会按 maxCombos 抽样截断，并在批次 requestJson 里标记 rangeTruncated=true。</p>
+     * <p>注意：预设组合数只按 6 个维度精确计算。{@code limits.maxCombos = 0} 表示组合数不设上限
+     * （提交时 requested 超过网格规模才按全网格跑）；只有网格展开护栏 {@code ParamRanges.DEFAULT_EXPAND_LIMIT}
+     * （20000 组）会截断，并在批次 requestJson 里标记 {@code rangeTruncated=true}。</p>
      */
     @GetMapping("/presets")
     public ApiResponse<Map<String, Object>> presets() {
@@ -93,6 +94,7 @@ public class StrategyBacktestController {
             presets.add(item);
         }
         Map<String, Object> limits = new LinkedHashMap<>();
+        // 0 = 不限制：前端据此放开输入框上限，不要当成"最多 0 组"
         limits.put("maxCombos", properties.strategy().backtest().maxCombos());
         limits.put("defaultSampleSize", properties.strategy().backtest().defaultSampleSize());
         Map<String, Object> body = new LinkedHashMap<>();
@@ -106,10 +108,14 @@ public class StrategyBacktestController {
         return ApiResponse.ok(backtestService.detail(id));
     }
 
+    /**
+     * 参数组合排行。默认 50 条，上限 5000：落库已不截断（一批次可有上万行），
+     * 这里只是响应体护栏，不是"只存了 300 行"。
+     */
     @GetMapping("/{id}/results")
     public ApiResponse<List<BacktestResultRow>> results(@PathVariable long id,
             @RequestParam(required = false) Integer limit) {
-        return ApiResponse.ok(backtestService.results(id, PageArgs.of(limit, null, 50, 300).limit()));
+        return ApiResponse.ok(backtestService.results(id, PageArgs.of(limit, null, 50, 5000).limit()));
     }
 
     @GetMapping("/{id}/results/{resultId}/coins")

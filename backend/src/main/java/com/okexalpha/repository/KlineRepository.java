@@ -110,6 +110,46 @@ public class KlineRepository {
     public record Coverage(Long minTs, Long maxTs, long rows) {
     }
 
+    /** 相邻两根已存在 K 线之间的一段缺口（闭区间，两边都是周期网格上的 ts）。 */
+    public record Gap(long fromMs, long toMs) {
+    }
+
+    /**
+     * 库内某 (klineType, instId, bar) 的最大 ts；没有数据时返回 null。
+     *
+     * <p>给增量播种接库内水位用（见 {@code IncrementalSyncService}）。MIN/MAX 走主键
+     * (kline_type, inst_id, bar, ts_ms) 的反向扫描，一个 (type, inst, bar) 前缀内直达最后一行，毫秒级。</p>
+     */
+    public Long maxTs(String klineType, String instId, String bar) {
+        List<Long> result = jdbcTemplate.query(
+                "SELECT MAX(ts_ms) FROM okx_kline WHERE kline_type = ? AND inst_id = ? AND bar = ?",
+                (rs, rowNum) -> rs.getObject(1, Long.class), klineType, instId, bar);
+        return result.isEmpty() ? null : result.get(0);
+    }
+
+    /**
+     * 定位 [fromMs, toMs] 窗口内的内部缺口：相邻已存在行 ts 差大于一个周期的每一段 [prev+interval, ts-interval]。
+     *
+     * <p>给补拉精确分段用（见 {@code KlineCoverage#planGaps}）。只在 coverage 判定「中间有缺」
+     * （rows < 网格槽位数）时才调用，LAG 窗口聚合顺着主键序扫一遍该 (type, inst, bar) 前缀，
+     * 代价远小于整段重拉的翻页。缺口只可能出现在 (minTs, maxTs) 内部——窗口两端的缺失是
+     * 左右缘，由 {@code KlineCoverage} 自行补。</p>
+     */
+    public List<Gap> gaps(String klineType, String instId, String bar, long fromMs, long toMs, long intervalMs) {
+        return jdbcTemplate.query("""
+                WITH ordered AS (
+                    SELECT ts_ms, LAG(ts_ms) OVER (ORDER BY ts_ms) AS prev_ts
+                      FROM okx_kline
+                     WHERE kline_type = ? AND inst_id = ? AND bar = ? AND ts_ms >= ? AND ts_ms <= ?
+                )
+                SELECT prev_ts + ? AS gap_from, ts_ms - ? AS gap_to
+                  FROM ordered
+                 WHERE prev_ts IS NOT NULL AND ts_ms - prev_ts > ?
+                """,
+                (rs, rowNum) -> new Gap(rs.getLong("gap_from"), rs.getLong("gap_to")),
+                klineType, instId, bar, fromMs, toMs, intervalMs, intervalMs, intervalMs);
+    }
+
     /**
      * 查某个品种某个周期在 [fromMs, toMs] 内已有哪些 K 线。
      *

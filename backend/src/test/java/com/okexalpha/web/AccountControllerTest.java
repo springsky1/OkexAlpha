@@ -13,18 +13,21 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import com.okexalpha.service.account.AccountService;
+import com.okexalpha.service.account.ExchangeMirrorService;
 import com.okexalpha.web.dto.ApiResponse;
 
 /** 账户控制器只是薄壳：包成 ApiResponse 并原样透传参数。 */
 class AccountControllerTest {
 
     private AccountService accountService;
+    private ExchangeMirrorService exchangeMirrorService;
     private AccountController controller;
 
     @BeforeEach
     void setUp() {
         accountService = mock(AccountService.class);
-        controller = new AccountController(accountService);
+        exchangeMirrorService = mock(ExchangeMirrorService.class);
+        controller = new AccountController(accountService, exchangeMirrorService);
     }
 
     @Test

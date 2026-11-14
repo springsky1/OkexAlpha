@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /* 我的订单（legacy index.html §14 / app.js §16b 1:1 移植）
-   local 是本服务自己记录的影子订单，pending / history 走 OKX；每个 tab 首次进入才请求一次。 */
+   本页只查交易所真实订单：pending / history 走 OKX 订单接口，每个 tab 首次进入才请求一次。
+   影子订单在「策略 → 影子订单」页；影子策略在「策略 → 马丁策略」页。 */
 import { onMounted, reactive, ref } from 'vue'
 import { apiGet } from '../api/client'
 import { EP } from '../api/endpoints'
@@ -12,7 +13,6 @@ import {
   accIssueText,
   accNoticeText,
   ORDER_EX_COLS,
-  ORDER_LOCAL_COLS,
   ORDERS_EMPTY,
   ORDERS_LIMIT,
   ORDERS_TABS,
@@ -38,13 +38,12 @@ function blank(meta: string): TabState {
   return { requested: false, loaded: false, loading: false, rows: [], issue: '', wrapError: '', meta: meta }
 }
 
-const active = ref<OrdersState>('local')
+const active = ref<OrdersState>('pending')
 const updated = ref(ACC_NA)
 const topText = ref('')
 
 const tabs = reactive<Record<OrdersState, TabState>>({
-  local: blank('加载中…'),
-  pending: blank('尚未加载'),
+  pending: blank('加载中…'),
   history: blank('尚未加载')
 })
 
@@ -97,7 +96,7 @@ function refreshNow(): void {
 }
 
 onMounted(() => {
-  void loadTab('local', false)
+  void loadTab('pending', false)
 })
 </script>
 
@@ -106,7 +105,7 @@ onMounted(() => {
     <div class="page-head">
       <div>
         <h1>我的订单</h1>
-        <p class="muted">本地影子订单与交易所真实订单分开拉取：local 是本服务自己记录的影子订单，pending / history 走 OKX 订单接口。每个 tab 首次进入才请求一次。</p>
+        <p class="muted">交易所真实订单：pending / history 都走 OKX 订单接口，每个 tab 首次进入才请求一次。</p>
       </div>
       <div class="page-actions">
         <span class="hint" id="orders-updated">{{ updated }}</span>
@@ -149,12 +148,7 @@ onMounted(() => {
         <StateBlock v-else-if="!st(t.name).requested" kind="empty" text="尚未加载" />
         <StateBlock v-else-if="st(t.name).loading && !st(t.name).loaded" kind="loading" text="加载中…" />
         <div v-else-if="st(t.name).issue" class="alert danger">{{ st(t.name).issue }}</div>
-        <DataTable
-          v-else
-          :cols="t.name === 'local' ? ORDER_LOCAL_COLS : ORDER_EX_COLS"
-          :rows="st(t.name).rows"
-          :empty-text="ORDERS_EMPTY[t.name]"
-        />
+        <DataTable v-else :cols="ORDER_EX_COLS" :rows="st(t.name).rows" :empty-text="ORDERS_EMPTY[t.name]" />
       </div>
     </div>
   </section>

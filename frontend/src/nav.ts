@@ -1,5 +1,5 @@
 /* 导航注册表：16 个 hash 页面 / 3 个分组（含 Vue 新增的 order-center），与路由表保持同步。
-   migrated=true 的页面走 Vue 组件；false 的页面用 iframe 挂 /legacy/（过渡期双轨）。 */
+   「策略」放策略域（回测 / 影子订单 / 马丁策略 / 健康度 / 实盘），「账户」只放真实账户与订单。 */
 
 export interface NavEntry {
   route: string
@@ -29,6 +29,7 @@ export const NAV_GROUPS: { key: string; label: string; items: NavEntry[] }[] = [
     items: [
       { route: 'strategy-backtest', label: '策略回测', title: '策略回测', desc: '马丁策略参数寻优与回测结果。' },
       { route: 'shadow', label: '影子订单', title: '影子订单', desc: '影子盘订单、持仓与权益曲线。' },
+      { route: 'strategies', label: '马丁策略', title: '马丁策略', desc: '影子引擎里的马丁策略实例：参数、自选合约、持仓与最近订单，可停止运行中的策略。' },
       { route: 'health', label: '健康度', title: '健康度', desc: '策略健康检查规则与检查结果。' },
       { route: 'live', label: '实盘', title: '实盘', desc: '实盘闸门、下单与持仓。' }
     ]
@@ -38,9 +39,8 @@ export const NAV_GROUPS: { key: string; label: string; items: NavEntry[] }[] = [
     label: '账户',
     items: [
       { route: 'account', label: '账户概览', title: '账户概览', desc: 'OKX 只读账户信息：凭证脱敏展示、账户模式、余额明细与交易所持仓。本页只调用只读接口，不会下单 / 撤单 / 划转。' },
-      { route: 'orders', label: '我的订单', title: '我的订单', desc: '交易所订单查询与状态。' },
-      { route: 'order-center', label: '订单中心', title: '订单中心', desc: '类似 OKX 的订单中心：当前委托 / 历史委托 / 历史仓位 / 交易账单 / 策略 / 借币数据 / 资金账单，策略页可停止运行中的影子策略。' },
-      { route: 'strategies', label: '马丁策略', title: '马丁策略', desc: '策略实例管理与参数。' }
+      { route: 'orders', label: '我的订单', title: '我的订单', desc: '交易所真实订单：当前挂单与历史订单，不含影子账本。' },
+      { route: 'order-center', label: '订单中心', title: '订单中心', desc: '类似 OKX 的订单中心：当前委托 / 历史委托 / 历史仓位 / 交易账单 / 借币数据 / 资金账单。' }
     ]
   }
 ]

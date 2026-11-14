@@ -2,13 +2,24 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 
+/* 「停止」按钮走全局确认弹窗与 toast，这里替掉 UI store 避免真挂 modal */
+const uiMocks = vi.hoisted(() => ({
+  toast: vi.fn(),
+  confirmDialog: vi.fn(async () => true),
+  lastRefresh: { value: '—' }
+}))
+
 vi.mock('../src/api/client', () => ({
   apiGet: vi.fn(),
   apiPost: vi.fn(),
   apiRawGet: vi.fn()
 }))
 
-import { apiGet } from '../src/api/client'
+vi.mock('../src/stores/ui', () => ({
+  useUiStore: () => uiMocks
+}))
+
+import { apiGet, apiPost } from '../src/api/client'
 import { EP } from '../src/api/endpoints'
 import StrategiesView from '../src/views/StrategiesView.vue'
 import {
@@ -119,6 +130,15 @@ function mountView() {
   return mount(StrategiesView, { global: { plugins: [createPinia()] } })
 }
 
+function callsFor(state: string): number {
+  let n = 0
+  for (const c of mocked.mock.calls) {
+    const params = c[1] as { state?: string } | undefined
+    if (c[0] === EP.strategyStrategies && params && params.state === state) n++
+  }
+  return n
+}
+
 describe('strategies 页纯逻辑（legacy §16c 1:1）', () => {
   it('meta 文案：有数据带 limit，空列表只写「共 0 个」', () => {
     expect(strategiesMetaText(1)).toBe('共 1 个 · limit=' + STRATEGIES_LIMIT)
@@ -157,6 +177,8 @@ describe('StrategiesView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     setActivePinia(createPinia())
+    uiMocks.confirmDialog.mockResolvedValue(true)
+    ;(apiPost as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue({ status: 'STOPPED' })
     mockAll()
   })
 
@@ -222,6 +244,45 @@ describe('StrategiesView', () => {
     await flushPromises()
     expect(w.find('.alert.danger').text()).toBe('策略加载失败（state=running）：boom')
     expect(w.find('#strategies-running-wrap').text()).toContain('策略加载失败：boom')
+    w.unmount()
+  })
+
+  it('运行中行内有「停止」按钮：确认后 POST 并重拉 running，且不触发行展开', async () => {
+    const w = mountView()
+    await flushPromises()
+    const btn = w.find('#strategies-running-wrap [data-action="stop"]')
+    expect(btn.exists()).toBe(true)
+    expect(btn.attributes('data-id')).toBe('1')
+
+    await btn.trigger('click')
+    await flushPromises()
+
+    expect(uiMocks.confirmDialog).toHaveBeenCalledTimes(1)
+    const dlg = uiMocks.confirmDialog as unknown as { mock: { calls: unknown[][] } }
+    expect(String(dlg.mock.calls[0][0])).toBe('停止策略')
+    const post = apiPost as unknown as { mock: { calls: unknown[][] } }
+    const statusPosts = post.mock.calls.filter((c) => c[0] === EP.accountStrategyCenterStatus('1'))
+    expect(statusPosts.length).toBe(1)
+    expect(statusPosts[0][1]).toEqual({ status: 'STOPPED' })
+    expect(String(uiMocks.toast.mock.calls[0][0])).toContain('已停止')
+    expect(callsFor('running')).toBe(2)
+    /* 点按钮不冒泡到行上，详情不展开 */
+    expect(apiGet).not.toHaveBeenCalledWith('/api/v1/strategy/strategies/1')
+    expect(w.find('#strategies-detail-card').attributes('style')).toContain('display: none')
+    w.unmount()
+  })
+
+  it('停止策略：确认弹窗取消时一个请求都不发', async () => {
+    uiMocks.confirmDialog.mockResolvedValue(false)
+    const w = mountView()
+    await flushPromises()
+    await w.find('#strategies-running-wrap [data-action="stop"]').trigger('click')
+    await flushPromises()
+
+    const post = apiPost as unknown as { mock: { calls: unknown[][] } }
+    expect(post.mock.calls.filter((c) => c[0] === EP.accountStrategyCenterStatus('1')).length).toBe(0)
+    expect(callsFor('running')).toBe(1)
+    expect(uiMocks.toast).not.toHaveBeenCalled()
     w.unmount()
   })
 })

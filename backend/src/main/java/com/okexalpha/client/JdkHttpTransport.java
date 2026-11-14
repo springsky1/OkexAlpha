@@ -54,8 +54,14 @@ public class JdkHttpTransport implements HttpTransport {
             throws IOException, InterruptedException {
         HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
                 .timeout(readTimeout)
-                .header("Content-Type", "application/json")
                 .method(method, HttpRequest.BodyPublishers.ofString(body == null ? "" : body, StandardCharsets.UTF_8));
+        // 仅当调用方未提供 Content-Type 时补默认值：HttpRequest.Builder.header 是"追加"语义，
+        // 之前无条件再追加一次会让请求带上两条 Content-Type，OKX 直接回 50006 Incorrect Content-Type。
+        boolean hasContentType = headers.keySet().stream()
+                .anyMatch(name -> "content-type".equalsIgnoreCase(name));
+        if (!hasContentType) {
+            builder.header("Content-Type", "application/json");
+        }
         headers.forEach(builder::header);
         HttpResponse<String> response = client.send(builder.build(),
                 HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));

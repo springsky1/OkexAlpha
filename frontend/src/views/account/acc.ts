@@ -265,40 +265,23 @@ export const ACC_POSITION_COLS: TableCol[] = [
 
 export const ORDERS_LIMIT = 50
 
-export const ORDERS_STATES = ['local', 'pending', 'history'] as const
+export const ORDERS_STATES = ['pending', 'history'] as const
 export type OrdersState = (typeof ORDERS_STATES)[number]
 
 export const ORDERS_EMPTY: Record<OrdersState, string> = {
-  local: '本地暂无影子订单记录',
   pending: '交易所当前无挂单',
   history: '交易所无历史订单'
 }
 
 export const ORDERS_TABS: { name: OrdersState; label: string; title: string }[] = [
-  { name: 'local', label: '本地影子订单', title: '本地影子订单' },
   { name: 'pending', label: '交易所挂单', title: '交易所当前挂单' },
   { name: 'history', label: '交易所历史', title: '交易所历史订单' }
 ]
 
-/* legacy：共 N 条 · state=xxx（交易所两个 tab 追加 instType=SWAP） */
+/* 本页只查交易所真实订单，meta 固定追加 instType=SWAP */
 export function ordersMetaText(name: OrdersState, count: number): string {
-  return '共 ' + count + ' 条 · state=' + name + (name === 'local' ? '' : ' · instType=SWAP')
+  return '共 ' + count + ' 条 · state=' + name + ' · instType=SWAP'
 }
-
-export const ORDER_LOCAL_COLS: TableCol[] = [
-  { title: '时间 decidedAt', render: (r: Row) => '<span class="mono">' + esc(accTime(r.decidedAt)) + '</span>' },
-  { title: 'source', render: (r: Row) => '<span class="mono">' + esc(isNil(r.source) ? ACC_NA : r.source) + '</span>' },
-  { title: 'id', num: true, render: (r: Row) => esc(accInt(r.id)) },
-  { title: '策略 strategyId', num: true, render: (r: Row) => esc(accInt(r.strategyId)) },
-  { title: 'instId', render: (r: Row) => '<span class="mono">' + esc(isNil(r.instId) ? ACC_NA : r.instId) + '</span>' },
-  { title: '方向', render: (r: Row) => sideCell(r.side) },
-  { title: '类型 ordType', render: (r: Row) => esc(isNil(r.ordType) ? ACC_NA : r.ordType) },
-  { title: '数量 sz', num: true, render: (r: Row) => esc(accQty(r.sz)) },
-  { title: '价格 px', num: true, render: (r: Row) => esc(accPx(r.px)) },
-  { title: '名义 USD', num: true, render: (r: Row) => esc(accMoney(r.notionalUsd)) },
-  { title: '状态 state', render: (r: Row) => badge(r.state) },
-  { title: '原因 reason', render: (r: Row) => esc(isNil(r.reason) ? ACC_NA : r.reason) }
-]
 
 export const ORDER_EX_COLS: TableCol[] = [
   { title: '时间 cTime', render: (r: Row) => '<span class="mono">' + esc(accTime(r.cTime)) + '</span>' },

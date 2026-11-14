@@ -7,6 +7,8 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.slf4j.Logger;
@@ -21,7 +23,9 @@ import com.okexalpha.error.BadRequestException;
 import com.okexalpha.domain.ShadowPositionRow;
 import com.okexalpha.repository.ShadowRepository;
 import com.okexalpha.repository.ShadowRepository.ShadowStrategyRow;
+import com.okexalpha.service.strategy.live.AccountBudget;
 import com.okexalpha.strategy.engine.ShadowMath;
+import com.okexalpha.strategy.engine.ShadowSizing;
 import com.okexalpha.strategy.engine.StrategyParams;
 
 import tools.jackson.databind.JsonNode;
@@ -59,6 +63,11 @@ public class ShadowEngine {
     private final OkxApiClient client;
     private final OkxProperties properties;
     private final ObjectMapper objectMapper;
+    /** 共享账户预算：币间共享同一份权益，开仓/加仓都要过它（不能只看单币的 accountCapitalUsd）。 */
+    private final AccountBudget accountBudget;
+
+    /** 已就「张数与名义不一致」告警过的持仓 id：历史脏行每 5 秒打一条会淹掉整个日志，只留首次。 */
+    private final Set<Long> inconsistentWarned = ConcurrentHashMap.newKeySet();
 
     private final AtomicBoolean running = new AtomicBoolean();
     private volatile long lastTickAtMs;
@@ -67,11 +76,12 @@ public class ShadowEngine {
     private volatile Map<String, Double> lastPrices = Map.of();
 
     public ShadowEngine(ShadowRepository repository, OkxApiClient client, OkxProperties properties,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper, AccountBudget accountBudget) {
         this.repository = repository;
         this.client = client;
         this.properties = properties;
         this.objectMapper = objectMapper;
+        this.accountBudget = accountBudget;
     }
 
     /** 调度入口：固定间隔触发（默认 5s），上一轮没跑完就跳过本轮。 */
@@ -120,8 +130,9 @@ public class ShadowEngine {
      */
     public StrategyParams defaultParams() {
         OkxProperties.Strategy.Trading trading = properties.strategy().trading();
+        // 手工/默认参数没有归属账户：账户权益按"首仓预算"给，等于不允许自动加仓（fail-closed）
         return new StrategyParams(StrategyParams.LONG, 100d, DEFAULT_LEVERAGE, 5, 2.5d, 1.0d, 2.0d, 25.0d, 48,
-                trading.feeTaker(), 0.01d, trading.slippageBps());
+                trading.feeTaker(), trading.feeMaker(), 0.01d, trading.slippageBps(), 100d);
     }
 
     /**
@@ -136,6 +147,7 @@ public class ShadowEngine {
             side = StrategyParams.LONG;
         }
         double margin = firstNumber(node, 100d, "initialMarginUsd");
+        double accountCapital = firstNumber(node, margin, "accountCapitalUsd");
         return new StrategyParams(side, margin,
                 (int) Math.round(firstNumber(node, 5d, "leverage")),
                 (int) Math.round(firstNumber(node, 5d, "maxLayers")),
@@ -145,8 +157,10 @@ public class ShadowEngine {
                 firstNumber(node, 25.0d, "stopLossPct"),
                 (int) Math.round(firstNumber(node, 48d, "maxHoldHours")),
                 firstNumber(node, 0.0005d, "feeTaker"),
+                firstNumber(node, 0.0002d, "feeMaker"),
                 firstNumber(node, 0.01d, "fundingPer8hPct"),
-                firstNumber(node, 2d, "slippageBps"));
+                firstNumber(node, 2d, "slippageBps"),
+                accountCapital);
     }
 
     /** 一轮 tick 的结果汇总。 */
@@ -286,26 +300,61 @@ public class ShadowEngine {
             throw new BadRequestException("no min-order snapshot for " + spec.instId()
                     + "; refresh it first (POST /api/v1/strategy/min-order/refresh)");
         }
-        double perContract = minOrder.notionalPerContractUsd();
+        ContractSpec contract = contractOf(minOrder);
+        if (!(contract.ctVal() > 0d)) {
+            throw new BadRequestException("contract value (ctVal) is unavailable for " + spec.instId()
+                    + "; refresh min-order snapshot first (POST /api/v1/strategy/min-order/refresh)");
+        }
         double sz = spec.sz() == null ? minOrder.minSz() : spec.sz();
         if (!(sz > 0d) || !Double.isFinite(sz)) {
             throw new BadRequestException("sz must be > 0");
         }
         boolean usedMinSz = spec.sz() == null;
         boolean longSide = spec.longSide();
-        double notional = perContract * sz;
         double slip = spec.params().slippageBps() / 10000d;
         double entry = longSide ? spec.px() * (1d + slip) : spec.px() * (1d - slip);
+        // 名义 = 张数 × ctVal × 成交价（实时口径），不再用快照里的旧 refPx
+        double notional = contract.perContractUsd(entry) * sz;
         double margin = notional / spec.leverage();
         double liq = ShadowMath.liqPrice(entry, longSide, spec.leverage());
         String side = longSide ? StrategyParams.LONG : StrategyParams.SHORT;
         long now = System.currentTimeMillis();
         long orderId = repository.insertOrder(spec.strategyId(), spec.instId(), longSide ? "buy" : "sell", "market", sz,
                 entry, notional, "FILLED", REASON_COPY_OPEN, now);
+        if (!accountBudget.allows(margin)) {
+            // 手工复制的是**已经发生**的真实成交：账本必须如实记，只留痕提示已超共享账户上限
+            log.warn("手工复制开仓 {} 超出共享账户上限：保证金 {}U（仍如实记账，请核对真实可用资金）", spec.instId(),
+                    round2(margin));
+        }
         long positionId = repository.insertPosition(spec.strategyId(), spec.instId(), side, sz, entry, spec.px(),
                 notional, 0d, spec.leverage(), liq, margin);
         return new ManualOpenResult(positionId, orderId, spec.instId(), side, sz, usedMinSz, entry, notional, margin,
                 liq);
+    }
+
+    /**
+     * 强制平仓<b>单笔</b>影子持仓（健康度检查的 AUTO_EXIT 通道）：按当前标记价结算，含手续费与资金费，只动本地账本。
+     *
+     * <p>调用方必须逐笔指明目标持仓：早期实现让健康度检查遍历全部持仓无差别全平，任何一次误报都会清空整个账本。</p>
+     *
+     * @return 是否真的平掉了该笔持仓
+     */
+    public boolean forceClose(ShadowPositionRow pos, StrategyParams params, String reason, double markPx) {
+        if (pos == null || !(markPx > 0d) || !Double.isFinite(markPx)) {
+            return false;
+        }
+        StrategyParams p = params == null ? defaultParams() : params;
+        ContractSpec contract = contractOf(repository.findMinOrder(pos.instId()));
+        double entry = pos.entryPx() == null ? markPx : pos.entryPx();
+        double coinQty = positionCoinQty(pos, contract, entry);
+        if (!(coinQty > 0d)) {
+            log.warn("强制平仓跳过 {}（{}）：无法换算币数量 sz={} notional={} ctVal={}",
+                    pos.id(), pos.instId(), pos.sz(), pos.notionalUsd(), contract.ctVal());
+            return false;
+        }
+        close(pos.strategyId(), p, pos, reason, markPx, StrategyParams.LONG.equals(pos.side()),
+                p.slippageBps() / 10000d, false, coinQty);
+        return true;
     }
 
     /** 最小下单量快照是否可用于记账（张数与每张名义都必须为正）。 */
@@ -320,37 +369,118 @@ public class ShadowEngine {
         if (!usable(minOrder)) {
             return false;
         }
-        double perContract = minOrder.notionalPerContractUsd();
-        double sz = minOrder.minSz();
-        double notional = perContract * sz;
-        double targetNotional = targetNotional(strategy, params);
-        if (targetNotional > notional) {
-            double lot = minOrder.lotSz() == null || minOrder.lotSz() <= 0d ? sz : minOrder.lotSz();
-            double lots = Math.ceil(targetNotional / perContract / lot) * lot;
-            sz = Math.max(sz, lots);
-            notional = perContract * sz;
+        ContractSpec contract = contractOf(minOrder);
+        if (!(contract.ctVal() > 0d)) {
+            log.warn("影子开仓跳过 {}：合约乘数（ctVal）不可用，快照可能过期", instId);
+            return false;
         }
         double slip = params.slippageBps() / 10000d;
         double entry = longSide ? px * (1d + slip) : px * (1d - slip);
+        // 每张名义按实时成交价算（快照里的 refPx 可能过期数小时，会让名义系统性偏 3% 以上）
+        double perContract = contract.perContractUsd(entry);
+        if (!(perContract > 0d)) {
+            return false;
+        }
+        double sz = minOrder.minSz();
+        double targetNotional = targetNotional(params);
+        if (targetNotional > perContract * sz) {
+            double sized = ShadowSizing.contractsForNotional(targetNotional, contract.ctVal(), entry, contract.lotSz());
+            if (sized > 0d) {
+                sz = Math.max(sz, sized);
+            }
+        }
+        double notional = perContract * sz;
+        if (!(notional > 0d) || !Double.isFinite(notional)) {
+            return false;
+        }
         double margin = notional / params.leverage();
+        // 共享账户闸门：单币权益够 ≠ 账户够。4 个币各按 3385U 权益满仓，加起来 13.5K，
+        // 而真实账户只有几百 U —— 不看这一步，影子会开出实盘永远开不出的仓位。
+        if (!accountBudget.allows(margin)) {
+            log.info("影子开仓跳过 {}：共享账户放不下 {}U 保证金", instId, round2(margin));
+            return false;
+        }
         double liq = ShadowMath.liqPrice(entry, longSide, params.leverage());
         long now = System.currentTimeMillis();
         repository.insertOrder(strategy.id(), instId, longSide ? "buy" : "sell", "market", sz, entry, notional,
                 "FILLED", REASON_OPEN, now);
         repository.insertPosition(strategy.id(), instId, longSide ? StrategyParams.LONG : StrategyParams.SHORT, sz,
                 entry, px, notional, 0d, params.leverage(), liq, margin);
+        warnIfInconsistent(instId, notional, sz, contract.ctVal(), entry);
         return true;
     }
 
-    /** 目标名义金额：显式资金优先，否则用最小下单量（0 表示不放大）。 */
-    private double targetNotional(ShadowStrategyRow strategy, StrategyParams params) {
-        double configured = strategy.capitalPerCoinUsd() != null && strategy.capitalPerCoinUsd() > 0d
-                ? strategy.capitalPerCoinUsd()
-                : properties.strategy().trading().capitalPerCoinUsd();
-        if (configured <= 0d) {
+    /**
+     * 合约乘数快照：ctVal（一张合约的币数量）与 lotSz（最小变动张数）。
+     *
+     * <p>ctVal <= 0 表示快照信息不足，此时<b>禁止</b>把 sz 当币数量参与盈亏计算。</p>
+     */
+    private record ContractSpec(double ctVal, double lotSz) {
+
+        double perContractUsd(double px) {
+            return ShadowSizing.perContractUsd(ctVal, px);
+        }
+    }
+
+    private static ContractSpec contractOf(MinOrderRow minOrder) {
+        double ctVal = minOrder == null ? 0d
+                : ShadowSizing.ctValue(minOrder.ctVal(), minOrder.notionalPerContractUsd(), minOrder.refPx());
+        double lot = minOrder == null || minOrder.lotSz() == null || minOrder.lotSz() <= 0d ? 1d : minOrder.lotSz();
+        return new ContractSpec(ctVal, lot);
+    }
+
+    private static double round2(double value) {
+        return Math.round(value * 100d) / 100d;
+    }
+
+    private static double roundToLot(double contracts, double lotSz) {
+        if (!(contracts > 0d) || !Double.isFinite(contracts)) {
             return 0d;
         }
-        return configured * Math.max(1, params.leverage());
+        double lot = lotSz > 0d && Double.isFinite(lotSz) ? lotSz : 1d;
+        double rounded = Math.round(contracts / lot) * lot;
+        return rounded < lot ? lot : rounded;
+    }
+
+    /**
+     * 持仓的币数量：以「名义 / 入场价」为准，张数 × ctVal 交叉校验。
+     *
+     * <p>历史账本里混进过币数量（DOGE sz=29014 而名义只有 2638），名义金额才是可信的敞口口径，
+     * 所以不一致时用名义反算，并打一条 warn 留痕。</p>
+     */
+    private double positionCoinQty(ShadowPositionRow pos, ContractSpec contract, double entry) {
+        double byNotional = pos.notionalUsd() != null && entry > 0d ? pos.notionalUsd() / entry : 0d;
+        double bySz = contract.ctVal() > 0d ? ShadowSizing.coinQty(pos.sz(), contract.ctVal()) : 0d;
+        boolean consistent = ShadowSizing.notionalConsistent(
+                pos.notionalUsd() == null ? 0d : pos.notionalUsd(), pos.sz(), contract.ctVal(), entry);
+        if (byNotional > 0d && !consistent) {
+            if (inconsistentWarned.add(pos.id()) && inconsistentWarned.size() <= 20_000) {
+                log.warn("影子持仓 {}（{}）张数与名义不一致：sz={} ctVal={} notional={} entry={}，按名义反算币数量 {}",
+                        pos.id(), pos.instId(), pos.sz(), contract.ctVal(), pos.notionalUsd(), entry, byNotional);
+            }
+            return byNotional;
+        }
+        inconsistentWarned.remove(pos.id());
+        return bySz > 0d ? bySz : byNotional;
+    }
+
+    private static void warnIfInconsistent(String instId, double notional, double sz, double ctVal, double px) {
+        if (!ShadowSizing.notionalConsistent(notional, sz, ctVal, px)) {
+            log.warn("影子账本不变量告警 {}：notional={} 应约等于 sz({}) × ctVal({}) × px({})", instId, notional, sz,
+                    ctVal, px);
+        }
+    }
+
+    /**
+     * 首层目标名义金额 = {@code initialMarginUsd × leverage}，与 {@code MartingaleBacktester.notionalFor(p, 1)}
+     * 同一口径。
+     *
+     * <p>不能再用 {@code okx_strategy.capital_per_coin_usd}：它现在表示"这一币能动用的账户权益"，
+     * 升为候选策略时会抬到峰值保证金（例如 3216U），按它下单会把首层名义放大 8 倍，与回测完全脱节。</p>
+     */
+    private double targetNotional(StrategyParams params) {
+        double margin = params.initialMarginUsd();
+        return margin > 0d ? margin * Math.max(1, params.leverage()) : 0d;
     }
 
     private record Outcome(boolean closed, boolean layered) {
@@ -360,72 +490,114 @@ public class ShadowEngine {
     private Outcome manage(Long strategyId, StrategyParams params, ShadowPositionRow pos, double px, boolean longSide) {
         double entry = pos.entryPx() == null ? px : pos.entryPx();
         double sz = pos.sz();
-        double notional = pos.notionalUsd() == null ? entry * sz : pos.notionalUsd();
+        double slip = params.slippageBps() / 10000d;
+        ContractSpec contract = contractOf(repository.findMinOrder(pos.instId()));
+        // 缺名义金额时按「张数 × ctVal × 入场价」重建，绝不能再用 entry * sz（sz 是张数，量纲不同）
+        double notional = pos.notionalUsd() != null && pos.notionalUsd() > 0d
+                ? pos.notionalUsd()
+                : contract.perContractUsd(entry) * sz;
         double leverage = pos.leverage() == null ? params.leverage() : pos.leverage();
         double margin = pos.marginUsd() == null ? notional / leverage : pos.marginUsd();
         double liq = pos.liqPx() == null ? ShadowMath.liqPrice(entry, longSide, leverage) : pos.liqPx();
-        double slip = params.slippageBps() / 10000d;
-        double stop = ShadowMath.stopPrice(entry, longSide, params.stopLossPct(), margin, sz);
+        double coinQty = positionCoinQty(pos, contract, entry);
+        if (!(coinQty > 0d)) {
+            log.warn("影子持仓 {}（{}）无法换算币数量，本轮只跳过：sz={} notional={} ctVal={}",
+                    pos.id(), pos.instId(), sz, pos.notionalUsd(), contract.ctVal());
+            return new Outcome(false, false);
+        }
+        // 止损/盈亏一律按「币数量」计算：sz 是张数，直接喂进 ShadowMath 会把距离压缩 ctVal 倍
+        double stop = ShadowMath.stopPrice(entry, longSide, params.stopLossPct(), margin, coinQty);
         double takeProfit = ShadowMath.takeProfitPrice(entry, longSide, params.takeProfitPct());
 
         // 1) 强平（逐仓：最多亏掉该仓位保证金）
         if (longSide ? px <= liq : px >= liq) {
-            close(strategyId, pos, "LIQUIDATION", px, longSide, slip, true);
+            close(strategyId, params, pos, "LIQUIDATION", px, longSide, slip, true, coinQty);
             return new Outcome(true, false);
         }
         // 2) 止损
         if (longSide ? px <= stop : px >= stop) {
-            close(strategyId, pos, "SL", px, longSide, slip, false);
+            close(strategyId, params, pos, "SL", px, longSide, slip, false, coinQty);
             return new Outcome(true, false);
         }
         // 3) 逆势加仓（马丁）：自首层入场价的不利幅度达到 layerStepPct 且未达最大层数
-        int layers = repository.countLayers(strategyId, pos.instId());
+        int layers = repository.countLayers(strategyId, pos.instId(), pos.openedAt());
         double adversePct = longSide ? (entry - px) / entry * 100d : (px - entry) / entry * 100d;
         if (layers < params.maxLayers() && adversePct >= params.layerStepPct()) {
             double base = ShadowMath.baseNotional(notional, params.layerScale(), layers);
             double addNotional = ShadowMath.layerNotional(base, params.layerScale(), layers + 1);
             double addPx = longSide ? px * (1d + slip) : px * (1d - slip);
-            double addSz = addNotional / addPx;
-            if (addSz > 0d && Double.isFinite(addSz)) {
-                double newSz = sz + addSz;
-                double newNotional = notional + addNotional;
-                double newAvg = ShadowMath.mergeAverage(notional, entry, addNotional, addPx);
-                double newMargin = newNotional / leverage;
-                double newLiq = ShadowMath.liqPrice(newAvg, longSide, leverage);
-                long now = System.currentTimeMillis();
-                repository.insertOrder(strategyId, pos.instId(), longSide ? "buy" : "sell", "market", addSz,
-                        addPx, addNotional, "FILLED", REASON_LAYER, now);
-                repository.updatePosition(pos.id(), newSz, newAvg, px,
-                        ShadowMath.unrealized(newAvg, px, newSz, longSide), newNotional, newMargin, newLiq);
-                return new Outcome(false, true);
+            double addCoinQty = addNotional / addPx;
+            // 账户权益闸门：与 MartingaleBacktester 用同一判据（ShadowMath#allowsLayer）——
+            // 已用保证金 + 新层保证金必须落在「账户权益 + 已实现盈亏」的 95% 以内，否则这一层不开。
+            // 没有它影子会一直加到 8 层（峰值名义 3000U+），而策略推荐资金只有 100U，回测与实盘对不上。
+            // 两层闸门：本币权益（含已实现盈亏）够，且共享账户总保证金也放得下。
+            boolean headroom = ShadowMath.allowsLayer(params.accountCapitalUsd(),
+                    repository.realizedPnl(strategyId, pos.instId()), margin, addNotional / leverage)
+                    && accountBudget.allows(addNotional / leverage);
+            if (headroom && addCoinQty > 0d && Double.isFinite(addCoinQty)) {
+                double newCoinQty = coinQty + addCoinQty;
+                // 落库的张数必须由币数量反算（不再把币数量写进 sz 字段）
+                double addSz = contract.ctVal() > 0d
+                        ? roundToLot(ShadowSizing.contracts(addCoinQty, contract.ctVal()), contract.lotSz())
+                        : addCoinQty;
+                double newSz = contract.ctVal() > 0d
+                        ? roundToLot(ShadowSizing.contracts(newCoinQty, contract.ctVal()), contract.lotSz())
+                        : newCoinQty;
+                if (addSz > 0d && newSz > 0d && Double.isFinite(addSz) && Double.isFinite(newSz)) {
+                    double newNotional = notional + addNotional;
+                    double newAvg = ShadowMath.mergeAverage(notional, entry, addNotional, addPx);
+                    double newMargin = newNotional / leverage;
+                    double newLiq = ShadowMath.liqPrice(newAvg, longSide, leverage);
+                    long now = System.currentTimeMillis();
+                    repository.insertOrder(strategyId, pos.instId(), longSide ? "buy" : "sell", "market", addSz,
+                            addPx, addNotional, "FILLED", REASON_LAYER, now);
+                    repository.updatePosition(pos.id(), newSz, newAvg, px,
+                            ShadowMath.unrealized(newAvg, px, newCoinQty, longSide), newNotional, newMargin, newLiq);
+                    warnIfInconsistent(pos.instId(), newNotional, newSz, contract.ctVal(), newAvg);
+                    return new Outcome(false, true);
+                }
             }
         }
         // 4) 止盈
         if (longSide ? px >= takeProfit : px <= takeProfit) {
-            close(strategyId, pos, "TP", px, longSide, slip, false);
+            close(strategyId, params, pos, "TP", px, longSide, slip, false, coinQty);
             return new Outcome(true, false);
         }
         // 5) 超时
         if (pos.openedAt() != null) {
             long heldHours = Duration.between(pos.openedAt(), OffsetDateTime.now()).toHours();
             if (heldHours >= params.maxHoldHours()) {
-                close(strategyId, pos, "TIMEOUT", px, longSide, slip, false);
+                close(strategyId, params, pos, "TIMEOUT", px, longSide, slip, false, coinQty);
                 return new Outcome(true, false);
             }
         }
-        repository.markPosition(pos.id(), px, ShadowMath.unrealized(entry, px, sz, longSide));
+        repository.markPosition(pos.id(), px, ShadowMath.unrealized(entry, px, coinQty, longSide));
         return new Outcome(false, false);
     }
 
-    private void close(Long strategyId, ShadowPositionRow pos, String reason, double px, boolean longSide,
-            double slip, boolean liquidated) {
+    private void close(Long strategyId, StrategyParams params, ShadowPositionRow pos, String reason, double px,
+            boolean longSide, double slip, boolean liquidated, double coinQty) {
         double exit = longSide ? px * (1d - slip) : px * (1d + slip);
-        double pnl = liquidated
-                ? -Math.max(0d, pos.marginUsd() == null ? 0d : pos.marginUsd())
-                : ShadowMath.unrealized(pos.entryPx() == null ? exit : pos.entryPx(), exit, pos.sz(), longSide);
+        double entry = pos.entryPx() == null ? exit : pos.entryPx();
+        double notional = pos.notionalUsd() == null ? coinQty * entry : pos.notionalUsd();
+        double pnl;
+        if (liquidated) {
+            pnl = -Math.max(0d, pos.marginUsd() == null ? 0d : pos.marginUsd());
+        } else {
+            double gross = ShadowMath.unrealized(entry, exit, coinQty, longSide);
+            // 与 MartingaleBacktester.settle 对齐：开仓吃单 + 平仓按原因（止盈是限价=挂单）双边手续费
+            // + 按持仓时长摊的资金费。影子拿不到 bar 振幅，滑点仍按参数固定值（tick 级没有 K 线）。
+            double entryFee = Math.max(0d, params.feeTaker()) * notional;
+            double exitFee = Math.max(0d, "TP".equals(reason) ? params.feeMaker() : params.feeTaker()) * notional;
+            double fees = entryFee + exitFee;
+            double hours = pos.openedAt() == null ? 0d
+                    : Duration.between(pos.openedAt(), OffsetDateTime.now()).toMinutes() / 60d;
+            double funding = Math.max(0d, params.fundingPer8hPct()) / 100d * notional * (hours / 8d);
+            pnl = gross - fees - funding;
+        }
         long now = System.currentTimeMillis();
         repository.insertOrder(strategyId, pos.instId(), longSide ? "sell" : "buy", "market", pos.sz(), exit,
-                pos.notionalUsd(), "FILLED", reason, now);
+                notional, "FILLED", reason, now);
         repository.closePosition(pos.id(), exit, pnl);
     }
 
@@ -486,8 +658,20 @@ public class ShadowEngine {
 
     // ---------------------------------------------------------------- 参数解析
 
+    /**
+     * 策略参数 + 账户权益：params JSON 里没有 accountCapitalUsd 的老策略，退回
+     * {@code okx_strategy.capital_per_coin_usd}（每币分配资金就是这一币能动用的权益）。
+     */
     private StrategyParams paramsOf(ShadowStrategyRow strategy) {
-        return paramsFromJson(strategy.paramsJson());
+        StrategyParams params = paramsFromJson(strategy.paramsJson());
+        double configured = strategy.capitalPerCoinUsd() == null ? 0d : strategy.capitalPerCoinUsd();
+        if (!(configured > params.accountCapitalUsd())) {
+            return params;
+        }
+        return new StrategyParams(params.side(), params.initialMarginUsd(), params.leverage(), params.maxLayers(),
+                params.layerStepPct(), params.layerScale(), params.takeProfitPct(), params.stopLossPct(),
+                params.maxHoldHours(), params.feeTaker(), params.feeMaker(), params.fundingPer8hPct(),
+                params.slippageBps(), configured);
     }
 
     private List<String> universeOf(ShadowStrategyRow strategy) {

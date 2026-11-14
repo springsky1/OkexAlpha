@@ -340,6 +340,7 @@ CREATE TABLE IF NOT EXISTS okx_backtest_trade (
     side          text,
     layers        integer NOT NULL DEFAULT 1,
     avg_entry     double precision,
+    first_entry_px double precision,
     max_adverse_pct double precision,
     entry_ts_ms   bigint,
     exit_ts_ms    bigint,
@@ -422,6 +423,27 @@ CREATE TABLE IF NOT EXISTS okx_health_check (
 CREATE INDEX IF NOT EXISTS idx_okx_health_time ON okx_health_check (checked_at DESC);
 CREATE INDEX IF NOT EXISTS idx_okx_health_rule ON okx_health_check (rule, checked_at DESC);
 
+-- 22b. 数据质量快照（每日 00:10 UTC 留档：缺口 C1/C2、合法性 C4、对齐 C5、聚合一致性 C6）
+-- 与 db/migrations/011_daily_martingale.sql 等价：全新库建表在这里，老库靠迁移补齐。
+CREATE TABLE IF NOT EXISTS okx_data_quality_snapshot (
+    id          bigserial PRIMARY KEY,
+    bar         text NOT NULL,
+    scope       text NOT NULL,
+    inst_id     text,
+    checked_at  timestamptz NOT NULL DEFAULT now(),
+    window_start_ms bigint,
+    window_end_ms   bigint,
+    missing_count   integer NOT NULL DEFAULT 0,
+    gap_count       integer NOT NULL DEFAULT 0,
+    bad_ohlc_count  integer NOT NULL DEFAULT 0,
+    misaligned_count integer NOT NULL DEFAULT 0,
+    agg_mismatch_count integer NOT NULL DEFAULT 0,
+    stale_sec       bigint,
+    status      text NOT NULL,
+    detail      jsonb NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_okx_dq_checked ON okx_data_quality_snapshot (checked_at DESC, bar);
+
 -- 23. 组合快照（权益/可用/持仓数/名义敞口）
 CREATE TABLE IF NOT EXISTS okx_portfolio_snapshot (
     id                 bigserial PRIMARY KEY,
@@ -452,3 +474,90 @@ CREATE TABLE IF NOT EXISTS okx_credential_vault (
 COMMENT ON TABLE okx_credential_vault IS
     'OKX API 凭证保险库：三件套均为 AES-256-GCM 密文（v1:base64(nonce||ct||tag)）；主密钥来自环境变量 OKX_MASTER_KEY';
 COMMENT ON COLUMN okx_credential_vault.label IS 'Key 备注名，非机密（默认 OkexAlpha）';
+
+-- 25. 交易所委托订单镜像（pending + orders-history + orders-history-archive，按 ordId UPSERT）
+-- 与 db/migrations/012_exchange_mirror.sql 等价：全新库建表在这里，老库靠迁移补齐。
+CREATE TABLE IF NOT EXISTS okx_exchange_order (
+    ord_id        text PRIMARY KEY,
+    cl_ord_id     text,
+    inst_id       text NOT NULL,
+    inst_type     text,
+    td_mode       text,
+    side          text,
+    pos_side      text,
+    ord_type      text,
+    sz            double precision,
+    px            double precision,
+    avg_px        double precision,
+    fill_sz       double precision,
+    state         text,
+    lever         double precision,
+    fee           double precision,
+    fee_ccy       text,
+    pnl           double precision,
+    reduce_only   boolean,
+    algo_id       text,
+    cancel_source text,
+    c_time_ms     bigint,
+    u_time_ms     bigint,
+    archived      boolean NOT NULL DEFAULT false,
+    synced_at     timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_okx_exchange_order_time ON okx_exchange_order (c_time_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_okx_exchange_order_inst ON okx_exchange_order (inst_id, c_time_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_okx_exchange_order_state ON okx_exchange_order (state, c_time_ms DESC);
+
+-- 26. 交易所已平仓仓位镜像（positions-history，按合约+模式+方向+开平时间 UPSERT）
+CREATE TABLE IF NOT EXISTS okx_exchange_position (
+    id            bigserial PRIMARY KEY,
+    inst_id       text NOT NULL,
+    inst_type     text,
+    mgn_mode      text NOT NULL DEFAULT '',
+    pos_side      text NOT NULL DEFAULT '',
+    type          text,
+    lever         double precision,
+    open_avg_px   double precision,
+    close_avg_px  double precision,
+    mark_px       double precision,
+    pnl           double precision,
+    pnl_ratio     double precision,
+    realized_pnl  double precision,
+    fee           double precision,
+    funding_fee   double precision,
+    liq_px        double precision,
+    c_time_ms     bigint NOT NULL DEFAULT 0,
+    u_time_ms     bigint NOT NULL DEFAULT 0,
+    synced_at     timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT uq_okx_exchange_position UNIQUE (inst_id, mgn_mode, pos_side, c_time_ms, u_time_ms)
+);
+CREATE INDEX IF NOT EXISTS idx_okx_exchange_position_time ON okx_exchange_position (c_time_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_okx_exchange_position_inst ON okx_exchange_position (inst_id, c_time_ms DESC);
+
+-- 27. 交易所逐笔成交镜像（fills-history，按 tradeId UPSERT）
+CREATE TABLE IF NOT EXISTS okx_exchange_fill (
+    trade_id     text PRIMARY KEY,
+    ord_id       text,
+    inst_id      text NOT NULL,
+    inst_type    text,
+    side         text,
+    pos_side     text,
+    fill_sz      double precision,
+    fill_px      double precision,
+    fill_time_ms bigint,
+    fee          double precision,
+    fee_ccy      text,
+    exec_type    text,
+    tag          text,
+    pnl          double precision,
+    synced_at    timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_okx_exchange_fill_time ON okx_exchange_fill (fill_time_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_okx_exchange_fill_inst ON okx_exchange_fill (inst_id, fill_time_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_okx_exchange_fill_order ON okx_exchange_fill (ord_id);
+
+COMMENT ON TABLE okx_exchange_order IS
+    'OKX 委托订单本地镜像（pending + orders-history + orders-history-archive），按 ordId UPSERT；当前挂单同步后清理不在快照里的残留 live 行';
+COMMENT ON TABLE okx_exchange_position IS
+    'OKX 已平仓仓位本地镜像（positions-history），按合约+模式+方向+开平时间 UPSERT';
+COMMENT ON TABLE okx_exchange_fill IS
+    'OKX 逐笔成交本地镜像（fills-history），按 tradeId UPSERT';

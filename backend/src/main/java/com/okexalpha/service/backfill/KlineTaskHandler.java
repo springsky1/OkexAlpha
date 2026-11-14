@@ -25,7 +25,8 @@ import com.okexalpha.repository.KlineRepository;
  *
  * <p>默认开启覆盖率跳过（okx.backfill.coverage-skip）：开跑前先查库内已有哪些区间
  * （见 {@link KlineCoverage}），只拉还缺的段，已下过的部分不再消耗上游配额。中间有缺口时
- * 保守整段重拉，不会跳过任何缺口。</p>
+ * 先用 LAG 查询把洞逐段定位出来再分段补拉（见 {@link KlineRepository#gaps}）；定位不了
+ * （查询失败/洞太多）才保守整段重拉，无论哪条路都不会跳过缺口。</p>
  */
 @Component
 public class KlineTaskHandler implements BackfillTaskHandler {
@@ -123,7 +124,9 @@ public class KlineTaskHandler implements BackfillTaskHandler {
     }
 
     /**
-     * 查库内覆盖率并换算成缺失段。查库失败时退化为整段（与优化前一致）：宁可多拉，不可漏。
+     * 查库内覆盖率并换算成缺失段，两阶段：便宜的 count 判定先发现「中间有缺」，
+     * 再用 LAG 查询把洞逐段定位出来（见 {@link KlineRepository#gaps}），避免整段重拉的放大。
+     * 任一查询失败都退化为整段（与优化前一致）：宁可多拉，不可漏。
      */
     private List<KlineCoverage.Segment> planSegments(BackfillTaskRow task, TaskParams params, KlineType klineType,
             Bar bar, long startMs, long endMs) {
@@ -137,7 +140,30 @@ public class KlineTaskHandler implements BackfillTaskHandler {
         Long minTs = coverage == null ? null : coverage.minTs();
         Long maxTs = coverage == null ? null : coverage.maxTs();
         long rows = coverage == null ? 0L : coverage.rows();
-        return KlineCoverage.plan(minTs, maxTs, rows, startMs, endMs, bar.intervalMs(),
+        long intervalMs = bar.intervalMs();
+        List<KlineCoverage.Segment> holes = null;
+        if (minTs != null && maxTs != null && maxTs >= minTs && intervalMs > 0L && (maxTs - minTs) % intervalMs == 0L
+                && rows < (maxTs - minTs) / intervalMs + 1L) {
+            // 中间有缺：先精确定位洞（洞数超上限时 planGaps 自己会退回整段）
+            try {
+                holes = klineRepository.gaps(klineType.name(), params.instId(), bar.code(), startMs, endMs, intervalMs)
+                        .stream()
+                        .map(gap -> new KlineCoverage.Segment(gap.fromMs(), gap.toMs()))
+                        .toList();
+                if (holes.isEmpty()) {
+                    // count 与 gap 两次查询之间缺口被并发作业补上了（更晚的快照没有洞）→ 只补边缘
+                    log.info("task {} gap count mismatch resolved by fresher snapshot: no gaps found",
+                            task.taskKey());
+                } else {
+                    log.info("task {} interior incomplete: {} gap segment(s) located instead of full re-download",
+                            task.taskKey(), holes.size());
+                }
+            } catch (RuntimeException ex) {
+                log.warn("task {} gap query failed, falling back to full range: {}", task.taskKey(), ex.toString());
+                return List.of(new KlineCoverage.Segment(startMs, endMs));
+            }
+        }
+        return KlineCoverage.planGaps(minTs, maxTs, rows, holes, startMs, endMs, intervalMs,
                 properties.backfill().coverageRefreshMs(), System.currentTimeMillis());
     }
 

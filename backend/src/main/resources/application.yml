@@ -80,8 +80,11 @@ okx:
       enabled: true
       # 两轮之间的间隔（fixedDelay：上一轮跑完再等这么久），默认 5 分钟
       interval-ms: 300000
-      # 游标为空时的播种回看窗口：只写 now - lookback-ms 作为基线，不拉数据
+      # 游标为空时的播种回看窗口：库内 max(ts) 比 seed-max-age-ms 还旧（或没有数据）时，
+      # 只写 now - lookback-ms 作为基线，不拉数据；新鲜则直接从库内水位续拉，
+      # 避免 bulk 作业收尾晚于增量首跑时在交界处凭空制造缺口。默认 3 天。
       lookback-ms: 3600000
+      seed-max-age-ms: 259200000
       # 安全尾巴：补到 now - lag-ms 为止，给 OKX 的 K 线留出 confirm 时间
       lag-ms: 60000
       bars: "1m,5m,15m,1H"
@@ -126,8 +129,10 @@ okx:
       max-utilization-pct: 60
     backtest:
       threads: 2
+      # 未显式指定 combos 时的抽样数；0 = 全网格（受 ParamRanges.DEFAULT_EXPAND_LIMIT 20000 组护栏）
       default-sample-size: 400
-      max-combos: 2000
+      # 组合数上限；0 = 不限制（0.1 之后默认解除 2000 上限，落库行数也不再截断 300）
+      max-combos: 0
       # 与实测标定一致（candles 16/2s 下的干净吞吐），用于 data-plan 估算
       pages-per-second: 6.3
     trading:

@@ -26,6 +26,7 @@ import com.okexalpha.domain.KlineType;
 import com.okexalpha.error.ConflictException;
 import com.okexalpha.repository.BackfillJobRepository;
 import com.okexalpha.repository.InstrumentRepository;
+import com.okexalpha.repository.KlineRepository;
 import com.okexalpha.repository.SyncCursorRepository;
 
 /**
@@ -37,8 +38,10 @@ import com.okexalpha.repository.SyncCursorRepository;
  * <ol>
  *   <li>未启用（okx.sync.incremental.enabled=false）→ 直接返回 disabled；</li>
  *   <li>已有 KLINE 作业在 RUNNING → 本轮跳过，避免和人工补拉撞同一个 task_key；</li>
- *   <li>取最多 maxInstIds 个 live SWAP 品种；</li>
- *   <li>游标为空的组合只播种 now-lookback（写水位但不提交，先建立基线）；</li>
+ *   <li>选 maxInstIds 个增量品种：按 24h USD 成交额（tickers 的 volCcy24h×last）取 top-N，
+ *       行情拉不到时退回字母序 —— 主力币种永远在集合里，且选择失败不拖垮整轮同步；</li>
+ *   <li>游标为空的组合只播种水位不提交（先建立基线）：优先接库内 max(ts)（距 now 不超过
+ *       seed-max-age-ms 才可信），库内没有或太旧才退回 now-lookback；</li>
  *   <li>缺口不足一根 K 线 → 跳过；否则按 (bar, klineType) 分组提交补拉作业，start=组内最小游标+1、
  *       end=now-lag。提交成功只是入队，**不立刻推进水位**：先把这一组登记到内存态 pending，
  *       等下一轮（或之后某轮）确认该作业 DONE 后才把游标推进到 end —— 否则作业一旦 FAILED/CANCELED，
@@ -71,11 +74,14 @@ public class IncrementalSyncService {
     private final BackfillJobRepository jobRepository;
     private final SyncCursorRepository cursorRepository;
     private final InstrumentRepository instrumentRepository;
+    private final KlineRepository klineRepository;
+    private final TopVolumeSelector topVolumeSelector;
     private final LongSupplier nowMs;
 
     private final boolean enabled;
     private final long intervalMs;
     private final long lookbackMs;
+    private final long seedMaxAgeMs;
     private final long lagMs;
     private final List<String> bars;
     private final List<String> klineTypes;
@@ -96,30 +102,37 @@ public class IncrementalSyncService {
     @Autowired
     public IncrementalSyncService(BackfillService backfillService, BackfillJobRepository jobRepository,
             SyncCursorRepository cursorRepository, InstrumentRepository instrumentRepository,
+            KlineRepository klineRepository, TopVolumeSelector topVolumeSelector,
             @Value("${okx.sync.incremental.enabled:false}") boolean enabled,
             @Value("${okx.sync.incremental.interval-ms:300000}") long intervalMs,
             @Value("${okx.sync.incremental.lookback-ms:3600000}") long lookbackMs,
+            @Value("${okx.sync.incremental.seed-max-age-ms:259200000}") long seedMaxAgeMs,
             @Value("${okx.sync.incremental.lag-ms:60000}") long lagMs,
             @Value("${okx.sync.incremental.bars:1m,5m,15m,1H}") String bars,
             @Value("${okx.sync.incremental.kline-types:CANDLE,MARK}") String klineTypes,
             @Value("${okx.sync.incremental.max-inst-ids:20}") int maxInstIds) {
-        this(backfillService, jobRepository, cursorRepository, instrumentRepository, enabled, intervalMs, lookbackMs,
-                lagMs, bars, klineTypes, maxInstIds, System::currentTimeMillis);
+        this(backfillService, jobRepository, cursorRepository, instrumentRepository, klineRepository,
+                topVolumeSelector, enabled, intervalMs, lookbackMs, seedMaxAgeMs, lagMs, bars, klineTypes, maxInstIds,
+                System::currentTimeMillis);
     }
 
     /** 单测用：可注入时钟。 */
     IncrementalSyncService(BackfillService backfillService, BackfillJobRepository jobRepository,
-            SyncCursorRepository cursorRepository, InstrumentRepository instrumentRepository, boolean enabled,
-            long intervalMs, long lookbackMs, long lagMs, String bars, String klineTypes, int maxInstIds,
-            LongSupplier nowMs) {
+            SyncCursorRepository cursorRepository, InstrumentRepository instrumentRepository,
+            KlineRepository klineRepository, TopVolumeSelector topVolumeSelector, boolean enabled,
+            long intervalMs, long lookbackMs, long seedMaxAgeMs, long lagMs, String bars, String klineTypes,
+            int maxInstIds, LongSupplier nowMs) {
         this.backfillService = backfillService;
         this.jobRepository = jobRepository;
         this.cursorRepository = cursorRepository;
         this.instrumentRepository = instrumentRepository;
+        this.klineRepository = klineRepository;
+        this.topVolumeSelector = topVolumeSelector;
         this.nowMs = nowMs;
         this.enabled = enabled;
         this.intervalMs = intervalMs;
         this.lookbackMs = lookbackMs;
+        this.seedMaxAgeMs = seedMaxAgeMs;
         this.lagMs = lagMs;
         this.bars = parseBars(bars);
         this.klineTypes = parseKlineTypes(klineTypes);
@@ -130,9 +143,9 @@ public class IncrementalSyncService {
     }
 
     /** GET /api/v1/sync/incremental 的响应体。 */
-    public record Status(boolean enabled, long intervalMs, long lookbackMs, long lagMs, List<String> bars,
-            List<String> klineTypes, int maxInstIds, Long lastRunAtMs, String lastNote, Long lastJobId,
-            int cursorCount, List<CursorView> cursors, int runningKlineJobs, int pendingJobs) {
+    public record Status(boolean enabled, long intervalMs, long lookbackMs, long seedMaxAgeMs, long lagMs,
+            List<String> bars, List<String> klineTypes, int maxInstIds, Long lastRunAtMs, String lastNote,
+            Long lastJobId, int cursorCount, List<CursorView> cursors, int runningKlineJobs, int pendingJobs) {
     }
 
     /** 单个水位（cursorCount 超出 STATUS_CURSOR_LIMIT 时只回显前若干个）。 */
@@ -188,8 +201,9 @@ public class IncrementalSyncService {
                 cursors.add(new CursorView(entry.getKey(), entry.getValue()));
             }
         }
-        return new Status(enabled, intervalMs, lookbackMs, lagMs, bars, klineTypes, maxInstIds, lastRunAtMs,
-                lastNote, lastJobId, cursorCount, List.copyOf(cursors), runningKlineJobs(), pending.size());
+        return new Status(enabled, intervalMs, lookbackMs, seedMaxAgeMs, lagMs, bars, klineTypes, maxInstIds,
+                lastRunAtMs, lastNote, lastJobId, cursorCount, List.copyOf(cursors), runningKlineJobs(),
+                pending.size());
     }
 
     /**
@@ -221,7 +235,7 @@ public class IncrementalSyncService {
                         "已有 KLINE 作业在跑（job " + jobId + "），本轮跳过等它跑完" + pendingNote(), cursorAdvanced);
             }
 
-            List<String> instIds = instrumentRepository.findInstIds(InstType.SWAP.code(), null, maxInstIds);
+            List<String> instIds = selectInstIds();
             if (instIds.isEmpty()) {
                 return skip("no-instruments", null, "库内没有 live SWAP 品种，本轮跳过", cursorAdvanced);
             }
@@ -230,15 +244,25 @@ public class IncrementalSyncService {
             long seedMs = now - lookbackMs;
             Map<String, Long> cursors = cursorRepository.all();
 
-            // 1) 播种：游标为空的组合只写 now-lookback，本轮不提交（否则第一轮会把整个回看窗口重拉一遍）
+            // 1) 播种：游标为空的组合优先接库内水位 max(ts)（新鲜 = 距 now 不超过 seed-max-age-ms），
+            //     库内没有/太旧才退回 now-lookback。只写水位不提交（否则第一轮会把整个回看窗口重拉一遍）。
+            //     不接库内水位的话，bulk 作业结束晚于增量首跑时会在两者交界处凭空制造缺口。
             Set<String> seededKeys = new LinkedHashSet<>();
             int seeded = 0;
+            long seedFreshFloor = now - seedMaxAgeMs;
             for (String barCode : bars) {
                 for (String klineType : klineTypes) {
                     for (String instId : instIds) {
                         String key = cursorKey(klineType, instId, barCode);
                         if (cursors.get(key) == null) {
-                            cursorRepository.set(key, seedMs);
+                            Long dbMax = null;
+                            try {
+                                dbMax = klineRepository.maxTs(klineType, instId, barCode);
+                            } catch (RuntimeException ex) {
+                                log.warn("查 {} 库内水位失败，退回 now-lookback 播种: {}", key, ex.toString());
+                            }
+                            long seed = dbMax != null && dbMax >= seedFreshFloor ? dbMax : seedMs;
+                            cursorRepository.set(key, seed);
                             seededKeys.add(key);
                             seeded++;
                         }
@@ -393,6 +417,25 @@ public class IncrementalSyncService {
     private String pendingNote() {
         int count = pending.size();
         return count == 0 ? "" : "，" + count + " 个作业待完成后推进水位";
+    }
+
+    /**
+     * 选增量集合：优先 24h USD 成交额 top-N（BTC/ETH 这类主力币种天然排在前面），
+     * 行情拉不到或全不可用时退回字母序（旧选择方式），保证整轮同步不因行情接口抖动而中断。
+     */
+    private List<String> selectInstIds() {
+        try {
+            List<String> ranked = topVolumeSelector.select(maxInstIds);
+            if (!ranked.isEmpty()) {
+                log.info("incremental inst selection: top {} by 24h usd volume: {}", ranked.size(),
+                        String.join(",", ranked));
+                return ranked;
+            }
+            log.warn("incremental 24h volume selection returned nothing, falling back to alphabetical");
+        } catch (RuntimeException ex) {
+            log.warn("incremental 24h volume selection failed, falling back to alphabetical: {}", ex.toString());
+        }
+        return instrumentRepository.findInstIds(InstType.SWAP.code(), null, maxInstIds);
     }
 
     private int runningKlineJobs() {

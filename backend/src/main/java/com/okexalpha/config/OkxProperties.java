@@ -93,8 +93,8 @@ public record OkxProperties(
 
         /**
          * @param threads          回测并行线程数
-         * @param defaultSampleSize 磁盘抽样随机种子样本数（复现实验用）
-         * @param maxCombos        单次回测最多参数组合数
+         * @param defaultSampleSize 未显式指定 combos 时的抽样数（0 = 全网格）
+         * @param maxCombos        组合数上限（0 = 不限制；网格规模另有 ParamRanges 展开护栏）
          * @param pagesPerSecond   估算用页吞吐（与实测标定一致）
          */
         public record Backtest(int threads, int defaultSampleSize, int maxCombos, double pagesPerSecond) {
@@ -136,7 +136,7 @@ public record OkxProperties(
                 new Strategy(true,
                         new Strategy.Shadow(5000L),
                         new Strategy.Health(60000L, true, 20, 60),
-                        new Strategy.Backtest(2, 400, 2000, 6.3d),
+                        new Strategy.Backtest(2, 400, 0, 6.3d),
                         new Strategy.Trading(false, "SHADOW", null, null, null, 0.0005d, 0.0002d, 2d, 50, 0d, 500d,
                                 new Strategy.Trading.DailyBatch(false, "0 30 8 * * *"))));
     }

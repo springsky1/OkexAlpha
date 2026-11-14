@@ -24,6 +24,7 @@ import com.okexalpha.error.UnprocessableException;
 import com.okexalpha.repository.ShadowRepository;
 import com.okexalpha.security.OkxCredentials;
 import com.okexalpha.service.strategy.shadow.ShadowEngine;
+import com.okexalpha.web.dto.LiveLeverageRequest;
 import com.okexalpha.web.dto.LiveOrderRequest;
 
 /** 门禁不通过时绝不能触网；REAL 模式必须二次确认。 */
@@ -53,7 +54,7 @@ class LiveTradingServiceTest {
     @DisplayName("SHADOW 模式下单直接 422，且不发任何网络请求")
     void shadowModeIsBlockedWithoutNetwork() {
         LiveTradingService service = service(OkxProperties.defaults().strategy().trading());
-        assertThatThrownBy(() -> service.placeOrder(new LiveOrderRequest("BTC-USDT-SWAP", "buy", 1d, "market", null,
+        assertThatThrownBy(() -> service.placeOrder(new LiveOrderRequest("BTC-USDT-SWAP", "buy", "long", 1d, "market", null,
                 "isolated", false, null)))
                 .isInstanceOf(UnprocessableException.class)
                 .hasMessageContaining("MODE:");
@@ -65,7 +66,7 @@ class LiveTradingServiceTest {
     void realModeRequiresConfirm() {
         LiveTradingService service = service(new OkxProperties.Strategy.Trading(true, "REAL", "k", "s", "p", 0.0005d,
                 0.0002d, 2d, 50, 100d, 500d, new OkxProperties.Strategy.Trading.DailyBatch(false, "0 30 8 * * *")));
-        assertThatThrownBy(() -> service.placeOrder(new LiveOrderRequest("BTC-USDT-SWAP", "buy", 1d, "market", null,
+        assertThatThrownBy(() -> service.placeOrder(new LiveOrderRequest("BTC-USDT-SWAP", "buy", "long", 1d, "market", null,
                 "isolated", false, null)))
                 .isInstanceOf(BadRequestException.class)
                 .hasMessageContaining("CONFIRM-REAL-TRADING");
@@ -76,11 +77,11 @@ class LiveTradingServiceTest {
     @DisplayName("aa 参数校验：sz<=0 与非法 side 先被拒")
     void validatesRequestBeforeGate() {
         LiveTradingService service = service(OkxProperties.defaults().strategy().trading());
-        assertThatThrownBy(() -> service.placeOrder(new LiveOrderRequest("BTC-USDT-SWAP", "hold", 1d, "market", null,
+        assertThatThrownBy(() -> service.placeOrder(new LiveOrderRequest("BTC-USDT-SWAP", "hold", null, 1d, "market", null,
                 "isolated", false, null)))
                 .isInstanceOf(BadRequestException.class)
                 .hasMessageContaining("side");
-        assertThatThrownBy(() -> service.placeOrder(new LiveOrderRequest("BTC-USDT-SWAP", "buy", 0d, "market", null,
+        assertThatThrownBy(() -> service.placeOrder(new LiveOrderRequest("BTC-USDT-SWAP", "buy", null, 0d, "market", null,
                 "isolated", false, null)))
                 .isInstanceOf(BadRequestException.class)
                 .hasMessageContaining("sz");
@@ -114,13 +115,79 @@ class LiveTradingServiceTest {
         verify(tradeClient).positions("SWAP");
     }
 
+    @Test
+    @DisplayName("门禁通过时把 posSide 写进下单请求体（long_short_mode 必需），留空则不下发")
+    void passesPosSideToExchange() {
+        TradingGate gate = mock(TradingGate.class);
+        given(gate.evaluate()).willReturn(new GateReport("REAL", true, java.util.List.of(), java.util.List.of(),
+                java.util.Map.of()));
+        OkxProperties props = TradingGateTest.propsWithTrading(OkxProperties.defaults().strategy().trading());
+        OkxCredentials credentials = TradingGateTest.credentialsOf(props.strategy().trading());
+        given(tradeClient.placeOrder(any())).willReturn(java.util.List.of());
+        LiveTradingService service = new LiveTradingService(props, credentials, gate, tradeClient, repository,
+                shadowEngine);
+
+        service.placeOrder(new LiveOrderRequest("BTC-USDT-SWAP", "sell", "short", 1d, "market", null,
+                "isolated", false, "CONFIRM-REAL-TRADING"));
+
+        org.mockito.ArgumentCaptor<java.util.Map<String, Object>> captor =
+                org.mockito.ArgumentCaptor.forClass(java.util.Map.class);
+        verify(tradeClient).placeOrder(captor.capture());
+        assertThat(captor.getValue()).containsEntry("posSide", "short").containsEntry("side", "sell");
+
+        service.placeOrder(new LiveOrderRequest("BTC-USDT-SWAP", "buy", null, 1d, "market", null,
+                "isolated", false, "CONFIRM-REAL-TRADING"));
+        org.mockito.ArgumentCaptor<java.util.Map<String, Object>> captor2 =
+                org.mockito.ArgumentCaptor.forClass(java.util.Map.class);
+        verify(tradeClient, org.mockito.Mockito.times(2)).placeOrder(captor2.capture());
+        assertThat(captor2.getAllValues().get(1)).doesNotContainKey("posSide");
+    }
+
+    @Test
+    @DisplayName("杠杆调整：门禁通过后把 instId/lever/mgnMode 原样下发")
+    void setsLeverageThroughGate() {
+        TradingGate gate = mock(TradingGate.class);
+        given(gate.evaluate()).willReturn(new GateReport("REAL", true, java.util.List.of(), java.util.List.of(),
+                java.util.Map.of()));
+        OkxProperties props = TradingGateTest.propsWithTrading(OkxProperties.defaults().strategy().trading());
+        OkxCredentials credentials = TradingGateTest.credentialsOf(props.strategy().trading());
+        given(tradeClient.setLeverage("BCH-USDT-SWAP", "5", "isolated", "short")).willReturn(java.util.List.of());
+        LiveTradingService service = new LiveTradingService(props, credentials, gate, tradeClient, repository,
+                shadowEngine);
+
+        var out = service.setLeverage(new LiveLeverageRequest("BCH-USDT-SWAP", "5", null, "short",
+                "CONFIRM-REAL-TRADING"));
+
+        assertThat(out).containsEntry("instId", "BCH-USDT-SWAP").containsEntry("lever", "5")
+                .containsEntry("mgnMode", "isolated").containsEntry("posSide", "short").containsEntry("accepted", true);
+        verify(tradeClient).setLeverage("BCH-USDT-SWAP", "5", "isolated", "short");
+    }
+
+    @Test
+    @DisplayName("杠杆调整：REAL 模式缺确认口令时 400，且不触网")
+    void setLeverageRequiresConfirmInRealMode() {
+        TradingGate gate = mock(TradingGate.class);
+        given(gate.evaluate()).willReturn(new GateReport("REAL", true, java.util.List.of(), java.util.List.of(),
+                java.util.Map.of()));
+        OkxProperties props = TradingGateTest.propsWithTrading(OkxProperties.defaults().strategy().trading());
+        OkxCredentials credentials = TradingGateTest.credentialsOf(props.strategy().trading());
+        LiveTradingService service = new LiveTradingService(props, credentials, gate, tradeClient, repository,
+                shadowEngine);
+
+        assertThatThrownBy(() -> service.setLeverage(new LiveLeverageRequest("BCH-USDT-SWAP", "5", null, "short", null)))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("CONFIRM-REAL-TRADING");
+        verify(tradeClient, never()).setLeverage(any(), any(), any(), any());
+    }
+
     private LiveTradingService service(OkxProperties.Strategy.Trading trading) {
         return service(trading, TradingGateTest.credentialsOf(trading));
     }
 
     private LiveTradingService service(OkxProperties.Strategy.Trading trading, OkxCredentials credentials) {
         OkxProperties props = TradingGateTest.propsWithTrading(trading);
-        TradingGate gate = new TradingGate(props, credentials, repository, Clock.fixed(NOW, ZoneOffset.UTC));
+        TradingGate gate = new TradingGate(props, credentials, repository, Clock.fixed(NOW, ZoneOffset.UTC),
+                TradingGateTest.availableAccount());
         return new LiveTradingService(props, credentials, gate, tradeClient, repository, shadowEngine);
     }
 }

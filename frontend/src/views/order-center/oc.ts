@@ -1,7 +1,7 @@
-/* 订单中心（需求 #4）：7 个 tab 的元数据、列定义与格式化。
-   数据来源分两类：交易所只读接口（委托 / 历史仓位 / 成交 / 账单 / 借币）与本地策略聚合；
+/* 订单中心：6 个 tab 的元数据、列定义与格式化（真实账户订单域，策略已归「策略」菜单）。
+   数据来源：交易所只读接口（委托 / 历史仓位 / 成交 / 账单 / 借币）；
    格式化一律复用 views/account/acc.ts 与 lib/format.ts 的口径，不重复实现。 */
-import { badge, esc, isNil } from '../../lib/format'
+import { esc, isNil } from '../../lib/format'
 import type { TableCol } from '../../components/DataTable.vue'
 import {
   ACC_NA,
@@ -18,26 +18,14 @@ import {
   kv,
   kvHtml,
   sideCell,
-  strategyDetailPairs,
-  strategyParamPairs,
-  strategyUniverseOf,
   type KvPair,
-  type Row,
-  type StrategyDetail
+  type Row
 } from '../account/acc'
 
 /* 每个 tab 一次拉取的条数上限（交易所接口本身也限 100） */
 export const OC_LIMIT = 100
 
-export const OC_TAB_NAMES = [
-  'pending',
-  'history',
-  'positions',
-  'fills',
-  'strategy',
-  'borrow',
-  'bills'
-] as const
+export const OC_TAB_NAMES = ['pending', 'history', 'positions', 'fills', 'borrow', 'bills'] as const
 
 export type OcTabName = (typeof OC_TAB_NAMES)[number]
 
@@ -50,42 +38,35 @@ export interface OcTab {
   hint: string
 }
 
-/* 顺序与需求 #4 一致：当前委托 / 历史委托 / 历史仓位 / 交易账单 / 策略 / 借币数据 / 资金账单 */
+/* 顺序：当前委托 / 历史委托 / 历史仓位 / 交易账单 / 借币数据 / 资金账单 */
 export const OC_TABS: OcTab[] = [
   {
     name: 'pending',
     label: '当前委托',
     title: '当前委托',
-    desc: '交易所未成交的挂单，直接来自 OKX 订单接口。',
-    hint: 'GET /api/v1/account/orders?state=pending&instType=SWAP&limit=100'
+    desc: '交易所未成交挂单的本地镜像：进入页面自动同步一次，也可点「强制刷新」重新拉取。',
+    hint: 'POST /api/v1/account/exchange/sync → GET /api/v1/account/exchange/orders?state=pending&instType=SWAP&limit=100&offset=0'
   },
   {
     name: 'history',
     label: '历史委托',
     title: '历史委托',
-    desc: '近 7 天已结束的委托；更早的归档委托需要时间段查询。',
-    hint: 'GET /api/v1/account/orders?state=history&instType=SWAP&limit=100'
+    desc: '近 7 天已结束委托的本地镜像；交易所只保留 7 天，更早的由归档接口补齐。',
+    hint: 'GET /api/v1/account/exchange/orders?state=history&instType=SWAP&limit=100&offset=0'
   },
   {
     name: 'positions',
     label: '历史仓位',
     title: '历史仓位',
-    desc: '已平仓的仓位记录，含开平仓均价、已实现盈亏与手续费。',
-    hint: 'GET /api/v1/account/positions-history?instType=SWAP&limit=100'
+    desc: '已平仓仓位的本地镜像，含开平仓均价、已实现盈亏、手续费与资金费。',
+    hint: 'GET /api/v1/account/exchange/positions?instType=SWAP&limit=100&offset=0'
   },
   {
     name: 'fills',
     label: '交易账单',
     title: '交易账单',
-    desc: '逐笔成交明细（fills-history），手续费与盈亏按笔计账。',
-    hint: 'GET /api/v1/account/fills?instType=SWAP&limit=100'
-  },
-  {
-    name: 'strategy',
-    label: '策略',
-    title: '策略',
-    desc: '影子策略的资金与盈亏聚合：累计投入、总收益、收益率、套利收益与浮动收益。',
-    hint: 'GET /api/v1/account/strategy-center?state=all&limit=100&offset=0'
+    desc: '逐笔成交明细的本地镜像，手续费与盈亏按笔计账。',
+    hint: 'GET /api/v1/account/exchange/fills?instType=SWAP&limit=100&offset=0'
   },
   {
     name: 'borrow',
@@ -108,14 +89,18 @@ export const OC_EMPTY: Record<OcTabName, string> = {
   history: '暂无历史委托',
   positions: '暂无历史仓位',
   fills: '暂无成交明细',
-  strategy: '暂无策略',
   borrow: '暂无借币记录',
   bills: '暂无资金流水'
 }
 
-/* tab 面板右上角的计数文案 */
-export function ocMetaText(name: OcTabName, count: number): string {
-  return name === 'strategy' ? '共 ' + count + ' 个策略' : '共 ' + count + ' 条（limit=' + OC_LIMIT + '）'
+/* tab 面板右上角的计数文案：本地镜像优先展示后端 total 与最后同步时间 */
+export function ocMetaText(_name: OcTabName, count: number, total?: unknown, lastSyncedAt?: unknown): string {
+  let text =
+    isNil(total) || total === null
+      ? '共 ' + count + ' 条（limit=' + OC_LIMIT + '）'
+      : '共 ' + String(total) + ' 条（本页 ' + count + '，limit=' + OC_LIMIT + '）'
+  if (!isNil(lastSyncedAt)) text += ' · 同步于 ' + accTime(lastSyncedAt)
+  return text
 }
 
 /* 接口失败统一前缀，便于用户一眼看出是哪个 tab */
@@ -201,124 +186,138 @@ export const OC_BORROW_COLS: TableCol[] = [
   { title: '时间 ts', render: (r: Row) => '<span class="mono">' + esc(accTime(r.ts)) + '</span>' }
 ]
 
-/* ===================== 策略 tab ===================== */
+/* ===================== 本地镜像 tab 与勾选汇总 ===================== */
 
-/* 策略 tab 用自定义表格（操作列要放按钮，DataTable 只支持字符串渲染） */
-export const OC_STRATEGY_HEAD = [
-  '策略名称',
-  '累计投入',
-  '总收益',
-  '收益率',
-  '套利收益',
-  '浮动收益',
-  '状态',
-  '操作'
-]
+/* 这 4 个 tab 改读本地镜像（okx_exchange_*），借币与资金账单仍直连既有接口 */
+export const OC_MIRROR_TABS: OcTabName[] = ['pending', 'history', 'positions', 'fills']
 
-/* 收益率：后端 returnPct 已是百分数（3 = 3%），不能走 accPct（那个吃比率） */
-export function ocReturnPct(v: unknown): string {
-  if (isNil(v)) return ACC_NA
-  const n = Number(v)
-  if (!isFinite(n)) return String(v)
-  return (n > 0 ? '+' : '') + n.toFixed(2) + '%'
+export function isMirrorTab(name: OcTabName): boolean {
+  return OC_MIRROR_TABS.indexOf(name) >= 0
 }
 
-export interface OcStrategy extends Row {
-  id?: number
-  name?: string
-  status?: string
-  running?: boolean
-  investedUsd?: number | null
-  realizedPnlUsd?: number
-  unrealizedPnlUsd?: number
-  totalPnlUsd?: number
-  returnPct?: number | null
-  openPositions?: number
-  closedPositions?: number
-  orderCount?: number
-  lastOrderAt?: unknown
-  instIds?: string[]
+/* 勾选主键：委托用 ordId，仓位用「合约+方向+开平时间」，成交用 tradeId */
+export function ocRowKey(name: OcTabName, row: Row): string {
+  if (name === 'positions') {
+    return 'pos-' + String(row.instId) + '-' + String(row.posSide) + '-' + String(row.cTime) + '-' + String(row.uTime)
+  }
+  if (name === 'fills') return 'fill-' + String(row.tradeId)
+  return 'ord-' + String(row.ordId)
 }
 
-export interface OcSummary {
+export interface OcInstSummary {
+  instId: string
   count: number
-  running: number
-  investedUsd: number
-  realizedPnlUsd: number
-  unrealizedPnlUsd: number
-  totalPnlUsd: number
-  returnPct: number | null
-  openPositions: number
-  closedPositions: number
+  netPnl: number
 }
 
-function num(v: unknown): number {
+export interface OcDaySummary {
+  day: string
+  netPnl: number
+}
+
+export interface OcSelectionSummary {
+  count: number
+  wins: number
+  losses: number
+  realizedPnl: number
+  fee: number
+  fundingFee: number
+  netPnl: number
+  winRate: number | null
+  byInst: OcInstSummary[]
+  days: OcDaySummary[]
+}
+
+function numOf(v: unknown): number {
   const n = Number(v)
   return isFinite(n) ? n : 0
 }
 
-/* 策略页顶部的合计指标：口径与单行一致（合计收益 / 合计投入） */
-export function ocSummary(items: Row[]): OcSummary {
-  let invested = 0
+function selectionTime(name: OcTabName, row: Row): unknown {
+  if (name === 'positions') return row.uTime
+  if (name === 'fills') return row.fillTime
+  return row.cTime
+}
+
+function utcDayOf(v: unknown): string | null {
+  const n = Number(v)
+  if (!isFinite(n) || n <= 0) return null
+  return new Date(n).toISOString().slice(0, 10)
+}
+
+/*
+ * 勾选汇总口径（4 个 tab 通用）：
+ *   已实现盈亏 = 行 pnl 之和（历史仓位没有 pnl 时回落 realizedPnl）；
+ *   手续费     = 行 fee 之和（OKX 返回负数，即成本）；
+ *   资金费     = 行 fundingFee 之和（只有历史仓位有）；
+ *   净收益     = 已实现盈亏 + 手续费 + 资金费；
+ *   胜率       = pnl > 0 的笔数 / pnl ≠ 0 的笔数（开仓单 pnl=0 不参与），无可比笔数时为 null；
+ *   按日归集   = 委托用 cTime、仓位用 uTime、成交用 fillTime，按 UTC 日期聚合。
+ */
+export function ocSelectionSummary(name: OcTabName, rows: Row[]): OcSelectionSummary {
+  const list = Array.isArray(rows) ? rows : []
   let realized = 0
-  let unrealized = 0
-  let running = 0
-  let open = 0
-  let closed = 0
-  const rows = Array.isArray(items) ? items : []
-  for (let i = 0; i < rows.length; i++) {
-    const r = rows[i] as OcStrategy
-    invested += num(r.investedUsd)
-    realized += num(r.realizedPnlUsd)
-    unrealized += num(r.unrealizedPnlUsd)
-    if (r.running === true) running++
-    open += num(r.openPositions)
-    closed += num(r.closedPositions)
+  let fee = 0
+  let funding = 0
+  let wins = 0
+  let losses = 0
+  const instOrder: string[] = []
+  const instMap: Record<string, OcInstSummary> = {}
+  const dayOrder: string[] = []
+  const dayMap: Record<string, OcDaySummary> = {}
+
+  for (let i = 0; i < list.length; i++) {
+    const row = list[i]
+    const pnl = isNil(row.pnl) ? numOf(row.realizedPnl) : numOf(row.pnl)
+    const rowFee = numOf(row.fee)
+    const rowFunding = numOf(row.fundingFee)
+    realized += pnl
+    fee += rowFee
+    funding += rowFunding
+    if (pnl > 0) wins++
+    else if (pnl < 0) losses++
+
+    const inst = isNil(row.instId) ? ACC_NA : String(row.instId)
+    if (!instMap[inst]) {
+      instOrder.push(inst)
+      instMap[inst] = { instId: inst, count: 0, netPnl: 0 }
+    }
+    instMap[inst].count++
+    instMap[inst].netPnl += pnl + rowFee + rowFunding
+
+    const day = utcDayOf(selectionTime(name, row))
+    if (day) {
+      if (!dayMap[day]) {
+        dayOrder.push(day)
+        dayMap[day] = { day: day, netPnl: 0 }
+      }
+      dayMap[day].netPnl += pnl + rowFee + rowFunding
+    }
   }
-  const total = realized + unrealized
+
+  const comparable = wins + losses
   return {
-    count: rows.length,
-    running: running,
-    investedUsd: invested,
-    realizedPnlUsd: realized,
-    unrealizedPnlUsd: unrealized,
-    totalPnlUsd: total,
-    returnPct: invested > 0 ? (total / invested) * 100 : null,
-    openPositions: open,
-    closedPositions: closed
+    count: list.length,
+    wins: wins,
+    losses: losses,
+    realizedPnl: realized,
+    fee: fee,
+    fundingFee: funding,
+    netPnl: realized + fee + funding,
+    winRate: comparable > 0 ? wins / comparable : null,
+    byInst: instOrder.map((key) => instMap[key]),
+    days: dayOrder.sort().map((key) => dayMap[key])
   }
 }
 
-export function ocSummaryPairs(items: Row[]): KvPair[] {
-  const s = ocSummary(items)
+export function ocSelectionPairs(s: OcSelectionSummary): KvPair[] {
   return [
-    kv('策略数', accInt(s.count)),
-    kv('运行中', accInt(s.running)),
-    kv('累计投入 USD', accMoney(s.investedUsd)),
-    kvHtml('总收益 USD', accPnl(s.totalPnlUsd)),
-    kvHtml('套利收益 USD', accPnl(s.realizedPnlUsd)),
-    kvHtml('浮动收益 USD', accPnl(s.unrealizedPnlUsd)),
-    kv('综合收益率', ocReturnPct(s.returnPct)),
-    kv('持仓（开/平）', accInt(s.openPositions) + ' / ' + accInt(s.closedPositions))
+    kv('已选笔数', accInt(s.count)),
+    kvHtml('已实现盈亏', accPnl(s.realizedPnl)),
+    kvHtml('手续费', accPnl(s.fee)),
+    kvHtml('资金费', accPnl(s.fundingFee)),
+    kvHtml('净收益', accPnl(s.netPnl)),
+    kv('胜率', s.winRate === null ? ACC_NA : (s.winRate * 100).toFixed(2) + '%')
   ]
 }
 
-/* 状态列：badge 之外补一句运行中 / 已停止，避免只看到 CANDIDATE 这种内部状态 */
-export function ocStrategyStatus(r: Row): string {
-  const s = badge(r.status)
-  const text = r.running === true ? '运行中' : '已停止'
-  return s + ' <span class="muted">' + esc(text) + '</span>'
-}
-
-/* 策略详情：复用马丁策略页的 13 项概览 + 参数 + 自选合约 */
-export function ocStrategyDetailPairs(detail: unknown, id: number): KvPair[] {
-  return strategyDetailPairs(detail as StrategyDetail, id)
-}
-
-export function ocStrategyParamPairs(detail: unknown): KvPair[] {
-  return strategyParamPairs(detail)
-}
-
-export function ocStrategyUniverse(detail: unknown): unknown[] {
-  return strategyUniverseOf(detail)
-}

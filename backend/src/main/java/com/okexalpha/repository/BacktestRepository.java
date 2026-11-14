@@ -1,9 +1,13 @@
 package com.okexalpha.repository;
 
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.sql.Types;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 
+import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
@@ -202,9 +206,71 @@ public class BacktestRepository {
         return id;
     }
 
+    /**
+     * 批量落库聚合结果：单条 INSERT 走 batchUpdate（300 行 → 0.3 秒级，几千行也可接受）。
+     *
+     * <p>不带 {@code RETURNING id}：批量阶段拿不到逐行 id，需要 id 的调用方（如精调冠军行）用
+     * {@link #findResultIdByParamKey(long, String)} 反查。</p>
+     */
     public void insertResults(long runId, List<ResultInsert> rows) {
-        for (ResultInsert row : rows) {
-            insertResult(runId, row);
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        jdbcTemplate.batchUpdate("""
+                INSERT INTO okx_backtest_result (run_id, param_key, params, inst_id, segment, metrics, coin_count,
+                                                 trade_count, win_rate, net_pnl, net_pnl_pct, max_drawdown_pct, sharpe,
+                                                 liquidation_count, oos_net_pnl_pct, verdict, rank)
+                VALUES (?, ?, ?::jsonb, ?, ?, ?::jsonb, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, new BatchPreparedStatementSetter() {
+            @Override
+            public void setValues(PreparedStatement ps, int i) throws SQLException {
+                ResultInsert row = rows.get(i);
+                ps.setLong(1, runId);
+                ps.setString(2, row.paramKey());
+                ps.setString(3, row.paramsJson());
+                ps.setString(4, row.instId());
+                ps.setString(5, row.segment());
+                ps.setString(6, row.metricsJson());
+                ps.setInt(7, row.coinCount());
+                ps.setInt(8, row.tradeCount());
+                setNullableDouble(ps, 9, row.winRate());
+                setNullableDouble(ps, 10, row.netPnl());
+                setNullableDouble(ps, 11, row.netPnlPct());
+                setNullableDouble(ps, 12, row.maxDrawdownPct());
+                setNullableDouble(ps, 13, row.sharpe());
+                ps.setInt(14, row.liquidationCount());
+                setNullableDouble(ps, 15, row.oosNetPnlPct());
+                ps.setString(16, row.verdict());
+                if (row.rank() == null) {
+                    ps.setNull(17, Types.INTEGER);
+                } else {
+                    ps.setInt(17, row.rank());
+                }
+            }
+
+            @Override
+            public int getBatchSize() {
+                return rows.size();
+            }
+        });
+    }
+
+    /** 反查某参数组合的聚合行 id（segment=ALL），没有则 0。 */
+    public long findResultIdByParamKey(long runId, String paramKey) {
+        List<Long> ids = jdbcTemplate.queryForList("""
+                SELECT id FROM okx_backtest_result
+                 WHERE run_id = ? AND param_key = ? AND segment = 'ALL'
+                 ORDER BY id
+                 LIMIT 1
+                """, Long.class, runId, paramKey);
+        return ids.isEmpty() ? 0L : ids.get(0);
+    }
+
+    private static void setNullableDouble(PreparedStatement ps, int index, Double value) throws SQLException {
+        if (value == null) {
+            ps.setNull(index, Types.DOUBLE);
+        } else {
+            ps.setDouble(index, value);
         }
     }
 
@@ -251,10 +317,10 @@ public class BacktestRepository {
             return;
         }
         jdbcTemplate.batchUpdate("""
-                INSERT INTO okx_backtest_trade (run_id, result_id, inst_id, side, layers, avg_entry, max_adverse_pct,
-                                                entry_ts_ms, exit_ts_ms, entry_px, exit_px, sz, notional_usd, pnl,
-                                                pnl_pct, fee, funding_paid, exit_reason)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO okx_backtest_trade (run_id, result_id, inst_id, side, layers, avg_entry, first_entry_px,
+                                                max_adverse_pct, entry_ts_ms, exit_ts_ms, entry_px, exit_px, sz,
+                                                notional_usd, pnl, pnl_pct, fee, funding_paid, exit_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, trades, trades.size(), (ps, t) -> {
             ps.setLong(1, runId);
             ps.setLong(2, resultId);
@@ -262,32 +328,34 @@ public class BacktestRepository {
             ps.setString(4, t.side());
             ps.setInt(5, t.layers());
             ps.setDouble(6, t.avgEntry());
-            ps.setDouble(7, t.maxAdversePct());
-            ps.setLong(8, t.entryTsMs());
-            ps.setLong(9, t.exitTsMs());
-            ps.setDouble(10, t.avgEntry());
-            ps.setDouble(11, t.exitPx());
-            ps.setDouble(12, t.qty());
-            ps.setDouble(13, t.notionalUsd());
-            ps.setDouble(14, t.pnl());
-            ps.setDouble(15, t.pnlPct());
-            ps.setDouble(16, t.fee());
-            ps.setDouble(17, t.funding());
-            ps.setString(18, t.exitReason());
+            ps.setDouble(7, t.firstEntryPx());
+            ps.setDouble(8, t.maxAdversePct());
+            ps.setLong(9, t.entryTsMs());
+            ps.setLong(10, t.exitTsMs());
+            ps.setDouble(11, t.firstEntryPx());
+            ps.setDouble(12, t.exitPx());
+            ps.setDouble(13, t.qty());
+            ps.setDouble(14, t.notionalUsd());
+            ps.setDouble(15, t.pnl());
+            ps.setDouble(16, t.pnlPct());
+            ps.setDouble(17, t.fee());
+            ps.setDouble(18, t.funding());
+            ps.setString(19, t.exitReason());
         });
     }
 
     public List<Map<String, Object>> listTrades(long runId, Long resultId, int limit) {
         if (resultId == null) {
             return jdbcTemplate.queryForList("""
-                    SELECT id, result_id, inst_id, side, layers, avg_entry, max_adverse_pct, entry_ts_ms, exit_ts_ms,
-                           entry_px, exit_px, sz, notional_usd, pnl, pnl_pct, fee, funding_paid, exit_reason
+                    SELECT id, result_id, inst_id, side, layers, avg_entry, first_entry_px, max_adverse_pct,
+                           entry_ts_ms, exit_ts_ms, entry_px, exit_px, sz, notional_usd, pnl, pnl_pct, fee,
+                           funding_paid, exit_reason
                     FROM okx_backtest_trade WHERE run_id = ? ORDER BY entry_ts_ms DESC LIMIT ?
                     """, runId, limit);
         }
         return jdbcTemplate.queryForList("""
-                SELECT id, result_id, inst_id, side, layers, avg_entry, max_adverse_pct, entry_ts_ms, exit_ts_ms,
-                       entry_px, exit_px, sz, notional_usd, pnl, pnl_pct, fee, funding_paid, exit_reason
+                SELECT id, result_id, inst_id, side, layers, avg_entry, first_entry_px, max_adverse_pct, entry_ts_ms,
+                       exit_ts_ms, entry_px, exit_px, sz, notional_usd, pnl, pnl_pct, fee, funding_paid, exit_reason
                 FROM okx_backtest_trade WHERE run_id = ? AND result_id = ? ORDER BY entry_ts_ms DESC LIMIT ?
                 """, runId, resultId, limit);
     }

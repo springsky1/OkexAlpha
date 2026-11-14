@@ -275,7 +275,9 @@ describe('回测纯逻辑：提交参数校验与组装（等价 legacy submitBa
   })
 
   it('逐项越界/非整数都会给出中文提示', () => {
-    const combos = btBuildPayload(form({ combos: '2001' }))
+    // 组合数上限已从 2000 提到 20000（ParamRanges.DEFAULT_EXPAND_LIMIT / 服务端 max-combos: 0）
+    expect(btBuildPayload(form({ combos: '2001' })).ok).toBe(true)
+    const combos = btBuildPayload(form({ combos: '20001' }))
     expect(combos.ok).toBe(false)
     if (combos.ok) return
     expect(combos.message).toContain('combos')

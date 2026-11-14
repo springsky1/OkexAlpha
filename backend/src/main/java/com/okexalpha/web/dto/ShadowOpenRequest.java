@@ -27,12 +27,13 @@ public record ShadowOpenRequest(
             Double stopLossPct,
             Integer maxHoldHours,
             Double feeTaker,
+            Double feeMaker,
             Double fundingPer8hPct,
             Double slippageBps) {
 
         /** 全部缺省（等价于不传 params）。 */
         public static Params empty() {
-            return new Params(null, null, null, null, null, null, null, null, null, null, null);
+            return new Params(null, null, null, null, null, null, null, null, null, null, null, null);
         }
     }
 }

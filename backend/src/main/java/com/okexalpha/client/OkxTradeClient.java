@@ -177,10 +177,20 @@ public class OkxTradeClient {
     // ------------------------------------------------------------------ 变更
 
     public List<JsonNode> setLeverage(String instId, String lever, String mgnMode) {
+        return setLeverage(instId, lever, mgnMode, null);
+    }
+
+    /**
+     * 设置杠杆。双向持仓（long_short_mode）下 OKX 要求带 posSide，否则报 51000 Parameter posSide error。
+     */
+    public List<JsonNode> setLeverage(String instId, String lever, String mgnMode, String posSide) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("instId", instId);
         body.put("lever", lever);
         body.put("mgnMode", mgnMode == null ? "isolated" : mgnMode);
+        if (posSide != null && !posSide.isBlank()) {
+            body.put("posSide", posSide);
+        }
         return call("POST", PATH_SET_LEVERAGE, null, json(body));
     }
 

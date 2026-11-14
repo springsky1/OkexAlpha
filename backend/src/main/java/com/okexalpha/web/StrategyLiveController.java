@@ -13,6 +13,7 @@ import com.okexalpha.service.strategy.live.GateReport;
 import com.okexalpha.service.strategy.live.LiveTradingService;
 import com.okexalpha.service.strategy.live.TradingGate;
 import com.okexalpha.web.dto.ApiResponse;
+import com.okexalpha.web.dto.LiveLeverageRequest;
 import com.okexalpha.web.dto.LiveOrderRequest;
 
 /**
@@ -54,5 +55,11 @@ public class StrategyLiveController {
     @PostMapping("/orders")
     public ApiResponse<Map<String, Object>> placeOrder(@RequestBody LiveOrderRequest request) {
         return ApiResponse.ok(service.placeOrder(request));
+    }
+
+    /** 把单个合约的杠杆设回回测值（门禁与 REAL 确认口令同下单）。 */
+    @PostMapping("/leverage")
+    public ApiResponse<Map<String, Object>> setLeverage(@RequestBody LiveLeverageRequest request) {
+        return ApiResponse.ok(service.setLeverage(request));
     }
 }

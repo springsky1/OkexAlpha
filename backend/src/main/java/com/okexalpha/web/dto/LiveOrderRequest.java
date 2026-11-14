@@ -8,6 +8,7 @@ package com.okexalpha.web.dto;
  *
  * @param instId   合约，如 BTC-USDT-SWAP
  * @param side     buy / sell
+ * @param posSide  持仓方向 long / short（双向持仓模式 long_short_mode 下 OKX 必填；净持仓模式留空）
  * @param sz       张数（按合约面值，不是 USD）
  * @param ordType  market / limit（默认 market）
  * @param px       限价单价格（market 忽略）
@@ -15,6 +16,6 @@ package com.okexalpha.web.dto;
  * @param reduceOnly 是否只减仓
  * @param confirm  实盘二次确认口令
  */
-public record LiveOrderRequest(String instId, String side, Double sz, String ordType, Double px, String tdMode,
-        Boolean reduceOnly, String confirm) {
+public record LiveOrderRequest(String instId, String side, String posSide, Double sz, String ordType, Double px,
+        String tdMode, Boolean reduceOnly, String confirm) {
 }

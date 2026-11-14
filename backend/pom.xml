@@ -57,13 +57,14 @@
       <resource>
         <directory>src/main/resources</directory>
       </resource>
-      <!-- 仓库根 db/schema.sql + db/migrations/*.sql 打进 classpath:db/，供启动时建表与增量迁移 -->
+      <!-- 仓库根 db/schema.sql + db/migrations/*.sql 打进 classpath:db/，供启动时建表与增量迁移。
+           注意：Maven 4 不再对 <targetPath> 做路径重写（实测会把文件平铺到 classpath 根），
+           必须用「上层目录 + include 相对路径」的方式保留 db/ 前缀。 -->
       <resource>
-        <directory>${project.basedir}/../db</directory>
-        <targetPath>db</targetPath>
+        <directory>${project.basedir}/..</directory>
         <includes>
-          <include>schema.sql</include>
-          <include>migrations/*.sql</include>
+          <include>db/schema.sql</include>
+          <include>db/migrations/*.sql</include>
         </includes>
       </resource>
     </resources>

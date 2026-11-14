@@ -26,9 +26,13 @@ class TradingGateTest {
 
     private ShadowRepository repository;
 
+    private RealAccountSource realAccount;
+
     @BeforeEach
     void setUp() {
         repository = mock(ShadowRepository.class);
+        realAccount = mock(RealAccountSource.class);
+        given(realAccount.funds()).willReturn(account(1_000d, 500d, 0, NOW.toEpochMilli()));
         given(repository.countOpenPositions()).willReturn(0L);
         given(repository.filledNotionalSince(anyLong())).willReturn(0d);
         given(repository.latestHealthFailCount()).willReturn(0L);
@@ -132,12 +136,111 @@ class TradingGateTest {
         assertThat(report.blockers()).anyMatch(b -> b.startsWith("CREDENTIALS:"));
     }
 
+    @Test
+    @DisplayName("读不到真实账户资金 → 阻断（fail-closed）")
+    void realAccountUnavailableBlocks() {
+        given(realAccount.funds()).willReturn(RealAccountSource.Funds.unavailable("凭证缺失"));
+        GateReport report = gate(trading(true, "DEMO", "k", "s", "p", 50, 500d)).evaluate();
+
+        assertThat(report.liveAllowed()).isFalse();
+        assertThat(report.blockers()).anyMatch(b -> b.startsWith("REAL_ACCOUNT:"));
+    }
+
+    @Test
+    @DisplayName("真实权益 <= 0 → 阻断")
+    void zeroEquityBlocks() {
+        given(realAccount.funds()).willReturn(account(0d, 500d, 0, NOW.toEpochMilli()));
+        GateReport report = gate(trading(true, "DEMO", "k", "s", "p", 50, 500d)).evaluate();
+
+        assertThat(report.liveAllowed()).isFalse();
+        assertThat(report.blockers()).anyMatch(b -> b.startsWith("REAL_ACCOUNT:"));
+    }
+
+    @Test
+    @DisplayName("真实可用保证金不足单笔 → 阻断（影子账本有额度也没用）")
+    void insufficientAvailableMarginBlocks() {
+        given(realAccount.funds()).willReturn(account(300d, 50d, 0, NOW.toEpochMilli()));
+        GateReport report = gate(trading(true, "DEMO", "k", "s", "p", 50, 500d)).evaluate();
+
+        assertThat(report.liveAllowed()).isFalse();
+        assertThat(report.blockers()).anyMatch(b -> b.startsWith("AVAILABLE_MARGIN:"));
+    }
+
+    @Test
+    @DisplayName("真实持仓数达到上限 → 阻断（不看影子持仓数）")
+    void realPositionLimitBlocks() {
+        given(realAccount.funds()).willReturn(account(1_000d, 500d, 3, NOW.toEpochMilli()));
+        GateReport report = gate(trading(true, "DEMO", "k", "s", "p", 3, 500d)).evaluate();
+
+        assertThat(report.liveAllowed()).isFalse();
+        assertThat(report.blockers()).anyMatch(b -> b.startsWith("REAL_POSITION_LIMIT:"));
+    }
+
+    @Test
+    @DisplayName("真实资金快照过期只 WARN 不阻断")
+    void staleAccountOnlyWarns() {
+        given(realAccount.funds()).willReturn(account(1_000d, 500d, 0, NOW.toEpochMilli() - 600_000L));
+        GateReport report = gate(trading(true, "DEMO", "k", "s", "p", 50, 500d)).evaluate();
+
+        assertThat(report.liveAllowed()).isTrue();
+        assertThat(report.checks()).anyMatch(c -> "REAL_ACCOUNT".equals(c.id()) && GateCheck.WARN.equals(c.level()));
+    }
+
+    @Test
+    @DisplayName("组合保证金：账户权益 100U 装不下单笔 100U 保证金 → PORTFOLIO_MARGIN 阻断")
+    void portfolioMarginBlocksWhenEquityTooSmall() {
+        given(realAccount.funds()).willReturn(account(100d, 100d, 0, NOW.toEpochMilli()));
+        given(repository.totalOpenMargin()).willReturn(0d);
+
+        GateReport report = gate(trading(true, "DEMO", "k", "s", "p", 50, 500d)).evaluate();
+
+        assertThat(report.liveAllowed()).isFalse();
+        assertThat(report.blockers()).anyMatch(b -> b.startsWith("PORTFOLIO_MARGIN:"));
+    }
+
+    @Test
+    @DisplayName("组合保证金：已用 900U 时剩余额度只有 50U，第二笔 100U 保证金被拒")
+    void portfolioMarginCountsExistingShadowUsage() {
+        given(realAccount.funds()).willReturn(account(1_000d, 800d, 0, NOW.toEpochMilli()));
+        given(repository.totalOpenMargin()).willReturn(900d);
+
+        GateReport report = gate(trading(true, "DEMO", "k", "s", "p", 50, 500d)).evaluate();
+
+        assertThat(report.liveAllowed()).isFalse();
+        assertThat(report.blockers()).anyMatch(b -> b.startsWith("PORTFOLIO_MARGIN:"));
+        assertThat(report.checks()).anyMatch(c -> "PORTFOLIO_MARGIN".equals(c.id()) && GateCheck.BLOCK.equals(c.level()));
+    }
+
+    @Test
+    @DisplayName("组合保证金：额度刚好够用（已用 840U / 上限 950U）→ 不阻断")
+    void portfolioMarginAllowsWhenHeadroomFits() {
+        given(realAccount.funds()).willReturn(account(1_000d, 800d, 0, NOW.toEpochMilli()));
+        given(repository.totalOpenMargin()).willReturn(840d);
+
+        GateReport report = gate(trading(true, "DEMO", "k", "s", "p", 50, 500d)).evaluate();
+
+        assertThat(report.blockers()).noneMatch(b -> b.startsWith("PORTFOLIO_MARGIN:"));
+    }
+
     private TradingGate gate(OkxProperties.Strategy.Trading trading) {
         return gate(trading, credentialsOf(trading));
     }
 
     private TradingGate gate(OkxProperties.Strategy.Trading trading, OkxCredentials credentials) {
-        return new TradingGate(propsWithTrading(trading), credentials, repository, Clock.fixed(NOW, ZoneOffset.UTC));
+        return new TradingGate(propsWithTrading(trading), credentials, repository, Clock.fixed(NOW, ZoneOffset.UTC),
+                realAccount);
+    }
+
+    /** 真实账户资金快照（默认配置的单笔保证金是 100 USD）。 */
+    private static RealAccountSource.Funds account(double equity, double available, int positions, long fetchedAtMs) {
+        return new RealAccountSource.Funds(true, equity, available, positions, fetchedAtMs, null);
+    }
+
+    /** 供同包其它测试复用的「账户可读且资金充足」桩。 */
+    static RealAccountSource availableAccount() {
+        RealAccountSource source = mock(RealAccountSource.class);
+        given(source.funds()).willReturn(account(1_000d, 500d, 0, NOW.toEpochMilli()));
+        return source;
     }
 
     /** 把配置里的 key 当作环境变量装载进内存快照（等价于启动时 reload）。 */

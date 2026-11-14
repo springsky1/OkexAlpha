@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.within;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import com.okexalpha.client.OkxApiClient;
@@ -14,6 +15,22 @@ import com.okexalpha.repository.MinOrderRepository;
 
 /** R5 下单张数换算：正向/反向合约的名义价值、lotSz 向上取整、minSz 兜底。 */
 class MinOrderSizingTest {
+
+    @Test
+    @DisplayName("最小张数定时刷新：超过阈值（间隔 80%，最低 1 分钟）才刷新，从未刷新过必刷")
+    void dueForRefreshHonoursInterval() {
+        long interval = MinOrderService.AUTO_REFRESH_INTERVAL_MS;
+        assertThat(MinOrderService.dueForRefresh(interval, interval)).isTrue();
+        assertThat(MinOrderService.dueForRefresh(interval - 60_000L, interval)).isTrue();
+        assertThat(MinOrderService.dueForRefresh(interval - 10L * 60_000L, interval)).isFalse();
+        // 表里没有任何记录（Long.MAX_VALUE）→ 立刻刷新
+        assertThat(MinOrderService.dueForRefresh(Long.MAX_VALUE, interval)).isTrue();
+        // 间隔离谱/非正 → 不自动刷新
+        assertThat(MinOrderService.dueForRefresh(Long.MAX_VALUE, 0L)).isFalse();
+        // 间隔极小时阈值兜底 1 分钟，避免疯狂打接口
+        assertThat(MinOrderService.dueForRefresh(59_000L, 10_000L)).isFalse();
+        assertThat(MinOrderService.dueForRefresh(60_000L, 10_000L)).isTrue();
+    }
 
     private static final double EPS = 1e-9;
 

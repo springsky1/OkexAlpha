@@ -63,4 +63,43 @@ class ShadowMathTest {
         double notional = 100d + 150d + 225d;
         assertThat(ShadowMath.baseNotional(notional, 1.5d, 3)).isCloseTo(100d, org.assertj.core.data.Offset.offset(1e-9));
     }
+
+    @Test
+    @DisplayName("加仓闸门：已用保证金 + 新层保证金 ≤ (权益 + 已实现盈亏) × 95%")
+    void allowsLayerRespectsAccountHeadroom() {
+        // 权益 1000、已用 600：新层 300 → 900 ≤ 950 允许；新层 400 → 1000 > 950 拒绝
+        assertThat(ShadowMath.allowsLayer(1000d, 0d, 600d, 300d)).isTrue();
+        assertThat(ShadowMath.allowsLayer(1000d, 0d, 600d, 400d)).isFalse();
+        // 已实现盈利抬高可用额度（上限 1140），已实现亏损压缩额度（上限 760）
+        assertThat(ShadowMath.allowsLayer(1000d, 200d, 600d, 400d)).isTrue();
+        assertThat(ShadowMath.allowsLayer(1000d, -200d, 600d, 300d)).isFalse();
+    }
+
+    @Test
+    @DisplayName("权益未知（≤0）或新层保证金非法时一律不许加仓：fail-closed")
+    void allowsLayerFailsClosed() {
+        assertThat(ShadowMath.allowsLayer(0d, 0d, 0d, 1d)).isFalse();
+        assertThat(ShadowMath.allowsLayer(-5d, 0d, 0d, 1d)).isFalse();
+        assertThat(ShadowMath.allowsLayer(1000d, 0d, 0d, 0d)).isFalse();
+        assertThat(ShadowMath.allowsLayer(Double.NaN, 0d, 0d, 1d)).isFalse();
+    }
+
+    @Test
+    @DisplayName("滑点随振幅缩放：参考振幅 0.2% → 1×，窄幅封底 0.5×，宽幅封顶 5×")
+    void slippageScalesWithRange() {
+        // 振幅 = (high − low) / refPx；基准 10bps
+        assertThat(ShadowMath.slippageBps(10d, 100.1d, 99.9d, 100d)).isCloseTo(10d, org.assertj.core.data.Offset.offset(1e-9));   // 0.2% → 1×
+        assertThat(ShadowMath.slippageBps(10d, 100.4d, 99.6d, 100d)).isCloseTo(40d, org.assertj.core.data.Offset.offset(1e-9));   // 0.8% → 4×
+        assertThat(ShadowMath.slippageBps(10d, 100.01d, 99.99d, 100d)).isCloseTo(5d, org.assertj.core.data.Offset.offset(1e-9));  // 0.02% → 0.5×
+        assertThat(ShadowMath.slippageBps(10d, 102.5d, 97.5d, 100d)).isCloseTo(50d, org.assertj.core.data.Offset.offset(1e-9));   // 5% → 封顶 5×
+    }
+
+    @Test
+    @DisplayName("滑点缩放对退化输入保持原值：base ≤ 0 归零，价格非法回退基准")
+    void slippageHandlesDegenerateInput() {
+        assertThat(ShadowMath.slippageBps(0d, 102d, 98d, 100d)).isZero();
+        assertThat(ShadowMath.slippageBps(-1d, 102d, 98d, 100d)).isZero();
+        assertThat(ShadowMath.slippageBps(10d, 98d, 102d, 100d)).isEqualTo(10d);   // high < low
+        assertThat(ShadowMath.slippageBps(10d, 100.2d, 99.8d, 0d)).isEqualTo(10d); // refPx 非法
+    }
 }

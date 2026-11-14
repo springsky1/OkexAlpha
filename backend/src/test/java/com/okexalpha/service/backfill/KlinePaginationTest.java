@@ -36,7 +36,7 @@ import com.okexalpha.support.BackfillControls;
 
 /**
  * KlineTaskHandler：after 游标向前翻页、重复 ts 时游标递减、空页收敛；
- * 以及按库内覆盖率只拉缺失段（段顶 + 1、从新到旧、有缺口时保守整段）。
+ * 以及按库内覆盖率只拉缺失段（段顶 + 1、从新到旧、中间缺口先 LAG 定位再分段，定位不了才整段）。
  */
 class KlinePaginationTest {
 
@@ -235,16 +235,49 @@ class KlinePaginationTest {
     }
 
     @Test
-    void coverageInteriorGapFallsBackToFullRange() {
-        // 中间缺一根 → 保守整段重拉，绝不跳过缺口
+    void coverageInteriorGapLocatesHoleAndFetchesOnlyIt() {
+        // 中间缺 START+3h 一根 → LAG 定位出洞，只拉那一根，不再整段重拉
         when(repository.coverage(anyString(), anyString(), anyString(), anyLong(), anyLong()))
                 .thenReturn(new KlineRepository.Coverage(START, END, 6L));
+        when(repository.gaps(eq("CANDLE"), eq("BTC-USDT-SWAP"), eq("1H"), eq(START), eq(END), eq(HOUR)))
+                .thenReturn(List.of(new KlineRepository.Gap(START + 3 * HOUR, START + 3 * HOUR)));
+        stubPages(List.of(candle(START + 3 * HOUR)));
+
+        TaskOutcome outcome = handler.execute(task(START, END, null), BackfillControls.running(11L));
+
+        assertThat(outcome.rowsWritten()).isEqualTo(1L);
+        assertThat(afters).containsExactly(START + 3 * HOUR + 1);
+        verify(repository).gaps("CANDLE", "BTC-USDT-SWAP", "1H", START, END, HOUR);
+    }
+
+    @Test
+    void gapQueryFailureFallsBackToFullRange() {
+        // 洞定位查询失败 → 保守整段重拉，绝不跳过缺口
+        when(repository.coverage(anyString(), anyString(), anyString(), anyLong(), anyLong()))
+                .thenReturn(new KlineRepository.Coverage(START, END, 6L));
+        when(repository.gaps(anyString(), anyString(), anyString(), anyLong(), anyLong(), anyLong()))
+                .thenThrow(new RuntimeException("db busy"));
         stubPages(List.of(candle(END - HOUR)));
 
         TaskOutcome outcome = handler.execute(task(START, END, null), BackfillControls.running(11L));
 
         assertThat(outcome.rowsWritten()).isEqualTo(1L);
         assertThat(afters).containsExactly(END + 1, END - HOUR);
+    }
+
+    @Test
+    void gapQueryEmptyMeansRaceAlreadyFilledIt() {
+        // count 说缺一根、更晚的 gap 快照却说没有洞（并发已补上）→ 不整段，只补边缘（这里边缘也齐）
+        when(repository.coverage(anyString(), anyString(), anyString(), anyLong(), anyLong()))
+                .thenReturn(new KlineRepository.Coverage(START, END, 6L));
+        when(repository.gaps(anyString(), anyString(), anyString(), anyLong(), anyLong(), anyLong()))
+                .thenReturn(List.of());
+
+        TaskOutcome outcome = handler.execute(task(START, END, null), BackfillControls.running(11L));
+
+        assertThat(outcome.rowsWritten()).isZero();
+        assertThat(outcome.note()).isNull();
+        verify(client, never()).getCandles(any(), anyString(), anyString(), any(), any(), anyInt());
     }
 
     @Test

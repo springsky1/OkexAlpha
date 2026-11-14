@@ -78,8 +78,8 @@ function ph(meta: BtRangeDimMeta, index: number): string {
       </div>
       <div class="field">
         <label for="bt-combos">combos 抽样组合数</label>
-        <input id="bt-combos" v-model="form.combos" type="number" min="1" max="2000" step="1">
-        <p class="hint">默认 400，上限 2000</p>
+        <input id="bt-combos" v-model="form.combos" type="number" min="1" step="1">
+        <p class="hint">默认 400；不设上限，超过网格组数就按全网格跑（网格最多 20000 组）</p>
       </div>
       <div class="field">
         <label for="bt-topn">topN 精调保留数</label>

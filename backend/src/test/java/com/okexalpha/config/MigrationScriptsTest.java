@@ -38,7 +38,9 @@ class MigrationScriptsTest {
                 "007_strategy_backtest_columns",
                 "008_backtest_result_keys",
                 "009_credential_vault",
-                "010_strategy_status_stopped");
+                "010_strategy_status_stopped",
+                "011_daily_martingale",
+                "012_exchange_mirror");
     }
 
     @Test

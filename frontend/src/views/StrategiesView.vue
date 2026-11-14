@@ -1,12 +1,14 @@
 <script setup lang="ts">
 /* 马丁策略（legacy index.html §15 / app.js §16c 1:1 移植）
-   运行中 / 历史两个 tab；点击表格行在下方展开详情，再次点击收起。 */
+   运行中 / 历史两个 tab；点击表格行在下方展开详情，再次点击收起。
+   运行中的策略可在行内「停止」（确认后只改本地 status=STOPPED，不触发平仓请求）。 */
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
-import { apiGet } from '../api/client'
+import { apiGet, apiPost } from '../api/client'
 import { EP } from '../api/endpoints'
-import { badge, fmtTime, isNil } from '../lib/format'
+import { badge, esc, fmtTime, isNil } from '../lib/format'
 import DataTable from '../components/DataTable.vue'
 import StateBlock from '../components/StateBlock.vue'
+import { useUiStore } from '../stores/ui'
 import {
   ACC_NA,
   accInt,
@@ -43,6 +45,8 @@ function blank(meta: string): TabState {
 }
 
 const active = ref<'running' | 'history'>('running')
+const ui = useUiStore()
+const stoppingId = ref(0)
 const updated = ref(ACC_NA)
 const topText = ref('')
 const runningDef = ref('口径：' + ACC_NA)
@@ -113,6 +117,31 @@ async function toggleDetail(id: number): Promise<void> {
   }
 }
 
+/* 停止策略：确认后只把本地 status 改成 STOPPED，影子引擎下一轮调度就会跳过它 */
+async function stopStrategy(row: Row): Promise<void> {
+  const n = Number(row.id)
+  if (!isFinite(n) || n <= 0) return
+  if (stoppingId.value > 0) return
+  const name = isNil(row.name) ? '#' + n : String(row.name)
+  const ok = await ui.confirmDialog(
+    '停止策略',
+    '确认停止策略 <b>' + esc(name) + '</b>（#' + n + '）？停止后不会被影子引擎继续调度，已有持仓由引擎平仓流程处理。',
+    '停止策略'
+  )
+  if (!ok) return
+  stoppingId.value = n
+  try {
+    const res = await apiPost<{ status?: unknown }>(EP.accountStrategyCenterStatus(String(n)), { status: 'STOPPED' })
+    const status = res && !isNil(res.status) ? String(res.status) : 'STOPPED'
+    ui.toast('策略 #' + n + ' 已停止（status=' + status + '）', 'ok')
+  } catch (err) {
+    ui.toast('停止失败：' + errMsg(err), 'err')
+  }
+  stoppingId.value = 0
+  await loadTab('running', true)
+  if (active.value === 'history') await loadTab('history', true)
+}
+
 async function loadTab(name: 'running' | 'history', force: boolean): Promise<void> {
   const s = tabs[name]
   if (s.loading) return
@@ -170,7 +199,7 @@ onMounted(() => {
     <div class="page-head">
       <div>
         <h1>马丁策略</h1>
-        <p class="muted">影子引擎里的马丁策略实例：参数、自选合约、持仓与最近订单。点击表格行展开详情，再次点击收起。</p>
+        <p class="muted">影子引擎里的马丁策略实例：参数、自选合约、持仓与最近订单。点击表格行展开详情，再次点击收起；运行中的策略可在行内「停止」。</p>
       </div>
       <div class="page-actions">
         <span class="hint" id="strategies-updated">{{ updated }}</span>
@@ -228,6 +257,7 @@ onMounted(() => {
                 <th class="num">订单数</th>
                 <th>最近下单</th>
                 <th>创建时间</th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -249,6 +279,19 @@ onMounted(() => {
                 <td class="num">{{ accInt(r.orderCount) }}</td>
                 <td class="mono">{{ accTime(r.lastOrderAt) }}</td>
                 <td class="mono">{{ accTime(r.createdAt) }}</td>
+                <td class="oc-actions">
+                  <button
+                    class="btn btn-xs btn-danger"
+                    type="button"
+                    data-action="stop"
+                    :data-id="r.id"
+                    :disabled="stoppingId === Number(r.id) || r.running !== true"
+                    :title="r.running === true ? '停止该策略' : '该策略未处于运行中'"
+                    @click.stop="stopStrategy(r)"
+                  >
+                    {{ stoppingId === Number(r.id) ? '停止中…' : '停止' }}
+                  </button>
+                </td>
               </tr>
             </tbody>
           </table>

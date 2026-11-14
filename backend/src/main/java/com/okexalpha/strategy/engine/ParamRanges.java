@@ -29,7 +29,7 @@ public record ParamRanges(
     public record Range(Double min, Double max, Double step) {
     }
 
-    /** 展开的安全上限：超过它先截断，服务端再按 maxCombos 抽样，避免用户填出天文数字时打爆内存。 */
+    /** 展开的安全上限：超过它先截断（服务端再按 combos 抽样/全跑），避免用户填出天文数字时打爆内存。 */
     public static final int DEFAULT_EXPAND_LIMIT = 20_000;
 
     public ParamRanges {
@@ -124,7 +124,8 @@ public record ParamRanges(
                                     }
                                     out.add(new StrategyParams(side, base.initialMarginUsd(), leverageValue,
                                             maxLayerValue, step, scale, takeProfit, stopLoss, base.maxHoldHours(),
-                                            base.feeTaker(), base.fundingPer8hPct(), base.slippageBps()));
+                                            base.feeTaker(), base.feeMaker(), base.fundingPer8hPct(),
+                                            base.slippageBps(), base.accountCapitalUsd()));
                                 }
                             }
                         }

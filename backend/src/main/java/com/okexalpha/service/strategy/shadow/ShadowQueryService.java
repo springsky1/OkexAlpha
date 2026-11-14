@@ -228,8 +228,10 @@ public class ShadowQueryService {
                     pickDouble(p.stopLossPct(), base.stopLossPct()),
                     pickInt(p.maxHoldHours(), base.maxHoldHours()),
                     pickDouble(p.feeTaker(), base.feeTaker()),
+                    pickDouble(p.feeMaker(), base.feeMaker()),
                     pickDouble(p.fundingPer8hPct(), base.fundingPer8hPct()),
-                    pickDouble(p.slippageBps(), base.slippageBps()));
+                    pickDouble(p.slippageBps(), base.slippageBps()),
+                    base.accountCapitalUsd());
         } catch (IllegalArgumentException ex) {
             throw new BadRequestException("invalid params: " + ex.getMessage());
         }

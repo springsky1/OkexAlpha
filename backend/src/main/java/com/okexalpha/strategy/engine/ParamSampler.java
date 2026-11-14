@@ -42,7 +42,8 @@ public final class ParamSampler {
                                 for (double sl : STOP_LOSSES) {
                                     out.add(new StrategyParams(side, base.initialMarginUsd(), leverage, maxLayers,
                                             step, scale, tp, sl, base.maxHoldHours(), base.feeTaker(),
-                                            base.fundingPer8hPct(), base.slippageBps()));
+                                            base.feeMaker(), base.fundingPer8hPct(), base.slippageBps(),
+                                            base.accountCapitalUsd()));
                                 }
                             }
                         }

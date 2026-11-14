@@ -17,6 +17,7 @@ import com.okexalpha.error.UnprocessableException;
 import com.okexalpha.repository.ShadowRepository;
 import com.okexalpha.security.OkxCredentials;
 import com.okexalpha.service.strategy.shadow.ShadowEngine;
+import com.okexalpha.web.dto.LiveLeverageRequest;
 import com.okexalpha.web.dto.LiveOrderRequest;
 
 import tools.jackson.databind.JsonNode;
@@ -98,6 +99,10 @@ public class LiveTradingService {
         if (request.sz() == null || request.sz() <= 0d) {
             throw new BadRequestException("sz must be > 0 (contracts, not USD)");
         }
+        String posSide = request.posSide() == null ? "" : request.posSide().trim().toLowerCase(Locale.ROOT);
+        if (!posSide.isEmpty() && !"long".equals(posSide) && !"short".equals(posSide)) {
+            throw new BadRequestException("posSide must be long, short or empty");
+        }
         String ordType = request.ordType() == null || request.ordType().isBlank() ? "market"
                 : request.ordType().trim().toLowerCase(Locale.ROOT);
         if (!"market".equals(ordType) && !"limit".equals(ordType)) {
@@ -122,6 +127,10 @@ public class LiveTradingService {
         body.put("side", side);
         body.put("ordType", ordType);
         body.put("sz", formatSz(request.sz()));
+        // 双向持仓（long_short_mode）下 OKX 要求 posSide；净持仓模式必须不带该字段。
+        if (!posSide.isEmpty()) {
+            body.put("posSide", posSide);
+        }
         body.put("clOrdId", clOrdId);
         if ("limit".equals(ordType)) {
             body.put("px", formatSz(request.px()));
@@ -158,6 +167,63 @@ public class LiveTradingService {
         out.put("accepted", accepted);
         out.put("mode", report.mode());
         out.put("gate", GateCheckSnapshot.of(report));
+        return out;
+    }
+
+    /**
+     * 调整单个合约的杠杆（默认逐仓）。同样走门禁与 REAL 二次确认，避免杠杆被误改。
+     *
+     * <p>马丁格尔回测里「止损距离 = stopLossPct% ÷ leverage」，实盘开仓时 OKX 用的是该合约
+     * 当前杠杆（往往是默认值），开完必须显式设回回测值，否则强平距离与报告不一致。</p>
+     */
+    public Map<String, Object> setLeverage(LiveLeverageRequest request) {
+        if (request == null || request.instId() == null || request.instId().isBlank()) {
+            throw new BadRequestException("instId is required");
+        }
+        String lever = request.lever() == null ? "" : request.lever().trim();
+        double leverValue;
+        try {
+            leverValue = Double.parseDouble(lever);
+        } catch (NumberFormatException ex) {
+            throw new BadRequestException("lever must be a number, e.g. \"3\"");
+        }
+        if (leverValue < 1d || leverValue > 125d) {
+            throw new BadRequestException("lever must be within 1..125");
+        }
+        String mgnMode = request.mgnMode() == null || request.mgnMode().isBlank() ? "isolated"
+                : request.mgnMode().trim().toLowerCase(Locale.ROOT);
+        if (!"isolated".equals(mgnMode) && !"cross".equals(mgnMode)) {
+            throw new BadRequestException("mgnMode must be isolated or cross");
+        }
+        String posSide = request.posSide() == null ? "" : request.posSide().trim().toLowerCase(Locale.ROOT);
+        if (!posSide.isEmpty() && !"long".equals(posSide) && !"short".equals(posSide)) {
+            throw new BadRequestException("posSide must be long, short or empty");
+        }
+        GateReport report = gate.evaluate();
+        if (!report.liveAllowed()) {
+            throw new UnprocessableException("live trading blocked -> " + String.join(" | ", report.blockers()));
+        }
+        if ("REAL".equals(report.mode()) && !CONFIRM_REAL.equals(request.confirm())) {
+            throw new BadRequestException("mode=REAL requires confirm=\"" + CONFIRM_REAL + "\"");
+        }
+
+        List<JsonNode> data = tradeClient.setLeverage(request.instId().trim(), lever, mgnMode, posSide);
+        JsonNode first = data.isEmpty() ? null : data.get(0);
+        String sCode = first == null ? null : text(first, "sCode");
+        String sMsg = first == null ? null : text(first, "sMsg");
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("instId", request.instId().trim());
+        out.put("lever", lever);
+        out.put("mgnMode", mgnMode);
+        out.put("posSide", posSide);
+        out.put("sCode", sCode);
+        out.put("sMsg", sMsg);
+        out.put("accepted", sCode == null || "0".equals(sCode));
+        out.put("mode", report.mode());
+        out.put("gate", GateCheckSnapshot.of(report));
+        log.info("live leverage set instId={} lever={} mgnMode={} sCode={}", out.get("instId"), lever, mgnMode,
+                sCode);
         return out;
     }
 
